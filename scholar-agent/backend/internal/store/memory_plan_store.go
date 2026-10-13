@@ -58,20 +58,29 @@ func (s *MemoryPlanStore) ListPlans() ([]*models.PlanGraph, error) {
 }
 
 func (s *MemoryPlanStore) UpdatePlan(planID string, update func(*models.PlanGraph) error) error {
+	return s.UpdatePlanWithEvents(planID, func(plan *models.PlanGraph) ([]models.PlanEvent, error) {
+		return nil, update(plan)
+	})
+}
+
+func (s *MemoryPlanStore) UpdatePlanWithEvents(planID string, update func(*models.PlanGraph) ([]models.PlanEvent, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	plan, ok := s.plans[planID]
 	if !ok {
 		return fmt.Errorf("plan not found: %s", planID)
 	}
-
 	working := clonePlanGraph(plan)
-	if err := update(working); err != nil {
+	events, err := update(working)
+	if err != nil {
 		return err
 	}
-
+	history := append([]models.PlanEvent(nil), s.events[planID]...)
+	for _, event := range events {
+		history = append(history, clonePlanEvent(event))
+	}
 	s.plans[planID] = working
+	s.events[planID] = history
 	return nil
 }
 

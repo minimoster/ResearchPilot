@@ -67,7 +67,7 @@ func (s *Scheduler) CancelPlan(planID, reason string) error {
 	if reason == "" {
 		reason = "canceled by user"
 	}
-	if err := s.store.UpdatePlan(planID, func(plan *models.PlanGraph) error {
+	if err := s.updateAndPublish(planID, func(plan *models.PlanGraph) error {
 		if plan.Status == models.StatusCompleted || plan.Status == models.StatusFailed || plan.Status == models.StatusCanceled {
 			return fmt.Errorf("plan cannot be canceled from status %s", plan.Status)
 		}
@@ -91,16 +91,17 @@ func (s *Scheduler) CancelPlan(planID, reason string) error {
 		}
 		fillMeta(plan)
 		return nil
+	}, func() []models.PlanEvent {
+		return []models.PlanEvent{{PlanID: planID, EventType: "plan_canceled", TaskStatus: string(models.StatusCanceled), Payload: map[string]any{"reason": reason}, Timestamp: now}}
 	}); err != nil {
 		return err
 	}
-	s.publishAndStore(planID, models.PlanEvent{PlanID: planID, EventType: "plan_canceled", TaskStatus: string(models.StatusCanceled), Payload: map[string]any{"reason": reason}, Timestamp: now})
 	return nil
 }
 
 func (s *Scheduler) RetryTask(planID, taskID string) error {
 	now := time.Now()
-	if err := s.store.UpdatePlan(planID, func(plan *models.PlanGraph) error {
+	if err := s.updateAndPublish(planID, func(plan *models.PlanGraph) error {
 		task := getNodeByID(plan, taskID)
 		if task == nil {
 			return fmt.Errorf("task not found: %s", taskID)
@@ -115,10 +116,11 @@ func (s *Scheduler) RetryTask(planID, taskID string) error {
 		plan.UpdatedAt = now
 		fillMeta(plan)
 		return nil
+	}, func() []models.PlanEvent {
+		return []models.PlanEvent{{PlanID: planID, EventType: "task_retry_requested", TaskID: taskID, TaskStatus: string(models.StatusPending), Timestamp: now}}
 	}); err != nil {
 		return err
 	}
-	s.publishAndStore(planID, models.PlanEvent{PlanID: planID, EventType: "task_retry_requested", TaskID: taskID, TaskStatus: string(models.StatusPending), Timestamp: now})
 	return nil
 }
 
@@ -127,7 +129,7 @@ func (s *Scheduler) ReassignTask(planID, taskID, assignedTo string) error {
 	if assignedTo == "" {
 		return fmt.Errorf("assigned agent is required")
 	}
-	if err := s.store.UpdatePlan(planID, func(plan *models.PlanGraph) error {
+	if err := s.updateAndPublish(planID, func(plan *models.PlanGraph) error {
 		task := getNodeByID(plan, taskID)
 		if task == nil {
 			return fmt.Errorf("task not found: %s", taskID)
@@ -143,10 +145,11 @@ func (s *Scheduler) ReassignTask(planID, taskID, assignedTo string) error {
 		plan.UpdatedAt = now
 		fillMeta(plan)
 		return nil
+	}, func() []models.PlanEvent {
+		return []models.PlanEvent{{PlanID: planID, EventType: "task_reassigned", TaskID: taskID, TaskStatus: string(models.StatusPending), Payload: map[string]any{"assigned_to": assignedTo}, Timestamp: now}}
 	}); err != nil {
 		return err
 	}
-	s.publishAndStore(planID, models.PlanEvent{PlanID: planID, EventType: "task_reassigned", TaskID: taskID, TaskStatus: string(models.StatusPending), Payload: map[string]any{"assigned_to": assignedTo}, Timestamp: now})
 	return nil
 }
 
@@ -155,7 +158,7 @@ func (s *Scheduler) ExecutePlan(ctx context.Context, planID string) error {
 		return fmt.Errorf("plan store is nil")
 	}
 
-	if err := s.store.UpdatePlan(planID, func(plan *models.PlanGraph) error {
+	if err := s.updateAndPublish(planID, func(plan *models.PlanGraph) error {
 		if plan.Status == models.StatusInProgress {
 			return fmt.Errorf("plan is already running")
 		}
@@ -171,14 +174,11 @@ func (s *Scheduler) ExecutePlan(ctx context.Context, planID string) error {
 		plan.Usage.FinishedAt = nil
 		plan.UpdatedAt = now
 		return nil
+	}, func() []models.PlanEvent {
+		return []models.PlanEvent{{PlanID: planID, EventType: "plan_started", Timestamp: time.Now()}}
 	}); err != nil {
 		return err
 	}
-	s.publishAndStore(planID, models.PlanEvent{
-		PlanID:    planID,
-		EventType: "plan_started",
-		Timestamp: time.Now(),
-	})
 
 executionLoop:
 	for {
@@ -206,21 +206,18 @@ executionLoop:
 		}
 
 		readyEvents := []models.PlanEvent{}
-		if err := s.store.UpdatePlan(planID, func(current *models.PlanGraph) error {
+		if err := s.updateAndPublish(planID, func(current *models.PlanGraph) error {
 			if current.Status == models.StatusCanceled {
 				return ErrPlanCanceled
 			}
 			readyEvents = s.promotePendingNodesToReady(current)
 			fillMeta(current)
 			return nil
-		}); err != nil {
+		}, func() []models.PlanEvent { return readyEvents }); err != nil {
 			if errors.Is(err, ErrPlanCanceled) {
 				return nil
 			}
 			return err
-		}
-		for _, event := range readyEvents {
-			s.publishAndStore(planID, event)
 		}
 		plan, err = s.store.GetPlan(planID)
 		if err != nil {
@@ -238,7 +235,7 @@ executionLoop:
 		if len(ready) == 0 {
 			if allTerminal(plan) {
 				finalStatus := models.StatusCompleted
-				if err := s.store.UpdatePlan(planID, func(current *models.PlanGraph) error {
+				if err := s.updateAndPublish(planID, func(current *models.PlanGraph) error {
 					if current.Status == models.StatusCanceled {
 						return ErrPlanCanceled
 					}
@@ -254,6 +251,12 @@ executionLoop:
 					current.UpdatedAt = now
 					fillMeta(current)
 					return nil
+				}, func() []models.PlanEvent {
+					eventType := "plan_completed"
+					if finalStatus == models.StatusFailed {
+						eventType = "plan_failed"
+					}
+					return []models.PlanEvent{{PlanID: planID, EventType: eventType, Timestamp: time.Now()}}
 				}); err != nil {
 					if errors.Is(err, ErrPlanCanceled) {
 						return nil
@@ -264,15 +267,6 @@ executionLoop:
 					return err
 				}
 
-				eventType := "plan_completed"
-				if finalStatus == models.StatusFailed {
-					eventType = "plan_failed"
-				}
-				s.publishAndStore(planID, models.PlanEvent{
-					PlanID:    planID,
-					EventType: eventType,
-					Timestamp: time.Now(),
-				})
 				if s.onTerminal != nil {
 					if latest, getErr := s.store.GetPlan(planID); getErr == nil && latest != nil {
 						s.onTerminal(ctx, latest)
@@ -284,7 +278,7 @@ executionLoop:
 			}
 
 			if noRunning(plan) {
-				if err := s.store.UpdatePlan(planID, func(current *models.PlanGraph) error {
+				if err := s.updateAndPublish(planID, func(current *models.PlanGraph) error {
 					if current.Status == models.StatusCanceled {
 						return ErrPlanCanceled
 					}
@@ -295,6 +289,8 @@ executionLoop:
 					current.UpdatedAt = time.Now()
 					fillMeta(current)
 					return nil
+				}, func() []models.PlanEvent {
+					return []models.PlanEvent{{PlanID: planID, EventType: "plan_failed", Payload: map[string]any{"reason": "deadlock_or_unsatisfied_dependencies"}, Timestamp: time.Now()}}
 				}); err != nil {
 					if errors.Is(err, ErrPlanCanceled) {
 						return nil
@@ -304,14 +300,6 @@ executionLoop:
 					}
 					return err
 				}
-				s.publishAndStore(planID, models.PlanEvent{
-					PlanID:    planID,
-					EventType: "plan_failed",
-					Payload: map[string]any{
-						"reason": "deadlock_or_unsatisfied_dependencies",
-					},
-					Timestamp: time.Now(),
-				})
 				if s.onTerminal != nil {
 					if latest, getErr := s.store.GetPlan(planID); getErr == nil && latest != nil {
 						s.onTerminal(ctx, latest)
@@ -494,7 +482,7 @@ func (s *Scheduler) runReadyNodes(ctx context.Context, planID string, ready []*m
 func (s *Scheduler) forwardTaskLogs(planID, taskID string, logChannel <-chan string, done chan<- struct{}) {
 	defer close(done)
 	for line := range logChannel {
-		s.publishAndStore(planID, models.PlanEvent{
+		if err := s.publishAndStore(planID, models.PlanEvent{
 			PlanID:     planID,
 			EventType:  "task_log",
 			TaskID:     taskID,
@@ -503,7 +491,9 @@ func (s *Scheduler) forwardTaskLogs(planID, taskID string, logChannel <-chan str
 				"message": line,
 			},
 			Timestamp: time.Now(),
-		})
+		}); err != nil {
+			log.Printf("scheduler: persist task log for %s: %v", taskID, err)
+		}
 	}
 }
 
@@ -511,7 +501,7 @@ func (s *Scheduler) markTaskStarted(planID, taskID string) (string, string, erro
 	now := time.Now()
 	executionID := uuid.NewString()
 	leaseOwner := ""
-	if err := s.store.UpdatePlan(planID, func(plan *models.PlanGraph) error {
+	if err := s.updateAndPublish(planID, func(plan *models.PlanGraph) error {
 		if plan.Status == models.StatusCanceled {
 			return ErrPlanCanceled
 		}
@@ -540,25 +530,26 @@ func (s *Scheduler) markTaskStarted(planID, taskID string) (string, string, erro
 		plan.Usage.TaskAttempts++
 		fillMeta(plan)
 		return nil
+	}, func() []models.PlanEvent {
+		return []models.PlanEvent{{
+			PlanID:      planID,
+			EventType:   "task_started",
+			TaskID:      taskID,
+			TaskStatus:  string(models.StatusInProgress),
+			ExecutionID: executionID,
+			Payload:     map[string]any{"lease_owner": leaseOwner},
+			Timestamp:   now,
+		}}
 	}); err != nil {
 		return "", "", err
 	}
 
-	s.publishAndStore(planID, models.PlanEvent{
-		PlanID:      planID,
-		EventType:   "task_started",
-		TaskID:      taskID,
-		TaskStatus:  string(models.StatusInProgress),
-		ExecutionID: executionID,
-		Payload:     map[string]any{"lease_owner": leaseOwner},
-		Timestamp:   now,
-	})
 	return executionID, leaseOwner, nil
 }
 
 func (s *Scheduler) markTaskCompleted(planID, taskID, executionID, leaseOwner string, result *models.TaskExecutionResult) error {
 	now := time.Now()
-	if err := s.store.UpdatePlan(planID, func(plan *models.PlanGraph) error {
+	if err := s.updateAndPublish(planID, func(plan *models.PlanGraph) error {
 		task := getNodeByID(plan, taskID)
 		if task == nil {
 			return fmt.Errorf("task not found: %s", taskID)
@@ -584,49 +575,52 @@ func (s *Scheduler) markTaskCompleted(planID, taskID, executionID, leaseOwner st
 
 		fillMeta(plan)
 		return nil
+	}, func() []models.PlanEvent {
+		events := []models.PlanEvent{}
+		if len(result.Artifacts) > 0 {
+			keys := make([]string, 0, len(result.Artifacts))
+			for _, artifact := range result.Artifacts {
+				keys = append(keys, artifact.Key)
+			}
+			events = append(events, models.PlanEvent{
+				PlanID:    planID,
+				EventType: "artifact_created",
+				TaskID:    taskID,
+				Payload: map[string]any{
+					"artifact_keys": keys,
+					"artifacts":     summarizeArtifacts(result.Artifacts),
+				},
+				Timestamp: now,
+			})
+		}
+
+		events = append(events, models.PlanEvent{
+			PlanID:      planID,
+			EventType:   "task_completed",
+			TaskID:      taskID,
+			TaskStatus:  string(models.StatusCompleted),
+			ExecutionID: executionID,
+			Payload: map[string]any{
+				"result_summary":  result.Result,
+				"result":          result.Result,
+				"code":            result.Code,
+				"structured_data": result.StructuredData,
+				"image_base64":    result.ImageBase64,
+			},
+			Timestamp: now,
+		})
+		return events
 	}); err != nil {
 		return err
 	}
 
-	if len(result.Artifacts) > 0 {
-		keys := make([]string, 0, len(result.Artifacts))
-		for _, artifact := range result.Artifacts {
-			keys = append(keys, artifact.Key)
-		}
-		s.publishAndStore(planID, models.PlanEvent{
-			PlanID:    planID,
-			EventType: "artifact_created",
-			TaskID:    taskID,
-			Payload: map[string]any{
-				"artifact_keys": keys,
-				"artifacts":     summarizeArtifacts(result.Artifacts),
-			},
-			Timestamp: now,
-		})
-	}
-
-	s.publishAndStore(planID, models.PlanEvent{
-		PlanID:      planID,
-		EventType:   "task_completed",
-		TaskID:      taskID,
-		TaskStatus:  string(models.StatusCompleted),
-		ExecutionID: executionID,
-		Payload: map[string]any{
-			"result_summary":  result.Result,
-			"result":          result.Result,
-			"code":            result.Code,
-			"structured_data": result.StructuredData,
-			"image_base64":    result.ImageBase64,
-		},
-		Timestamp: now,
-	})
 	return nil
 }
 
 func (s *Scheduler) markTaskFailed(planID, taskID, executionID, leaseOwner string, result *models.TaskExecutionResult) (bool, error) {
 	now := time.Now()
 	retrying := false
-	if err := s.store.UpdatePlan(planID, func(plan *models.PlanGraph) error {
+	if err := s.updateAndPublish(planID, func(plan *models.PlanGraph) error {
 		task := getNodeByID(plan, taskID)
 		if task == nil {
 			return fmt.Errorf("task not found: %s", taskID)
@@ -649,26 +643,29 @@ func (s *Scheduler) markTaskFailed(planID, taskID, executionID, leaseOwner strin
 		task.UpdatedAt = now
 		fillMeta(plan)
 		return nil
+	}, func() []models.PlanEvent {
+		events := []models.PlanEvent{}
+		if retrying {
+			events = append(events, models.PlanEvent{PlanID: planID, EventType: "task_retrying", TaskID: taskID, TaskStatus: string(models.StatusPending), ExecutionID: executionID, Payload: map[string]any{"error": result.Error}, Timestamp: now})
+			return events
+		}
+		events = append(events, models.PlanEvent{
+			PlanID:      planID,
+			EventType:   "task_failed",
+			TaskID:      taskID,
+			TaskStatus:  string(models.StatusFailed),
+			ExecutionID: executionID,
+			Payload: map[string]any{
+				"error": result.Error,
+			},
+			Timestamp: now,
+		})
+		return events
 	}); err != nil {
 		return false, err
 	}
 
-	if retrying {
-		s.publishAndStore(planID, models.PlanEvent{PlanID: planID, EventType: "task_retrying", TaskID: taskID, TaskStatus: string(models.StatusPending), ExecutionID: executionID, Payload: map[string]any{"error": result.Error}, Timestamp: now})
-		return true, nil
-	}
-	s.publishAndStore(planID, models.PlanEvent{
-		PlanID:      planID,
-		EventType:   "task_failed",
-		TaskID:      taskID,
-		TaskStatus:  string(models.StatusFailed),
-		ExecutionID: executionID,
-		Payload: map[string]any{
-			"error": result.Error,
-		},
-		Timestamp: now,
-	})
-	return false, nil
+	return retrying, nil
 }
 
 func summarizeTaskInputs(plan *models.PlanGraph, node *models.TaskNode) []map[string]any {
@@ -762,7 +759,7 @@ func budgetExceeded(plan *models.PlanGraph) bool {
 }
 
 func (s *Scheduler) publishDiscardedResult(planID, taskID, executionID, leaseOwner string) {
-	s.publishAndStore(planID, models.PlanEvent{
+	if err := s.publishAndStore(planID, models.PlanEvent{
 		PlanID:      planID,
 		EventType:   "task_result_discarded",
 		TaskID:      taskID,
@@ -772,12 +769,14 @@ func (s *Scheduler) publishDiscardedResult(planID, taskID, executionID, leaseOwn
 			"lease_owner": leaseOwner,
 		},
 		Timestamp: time.Now(),
-	})
+	}); err != nil {
+		log.Printf("scheduler: persist discarded result for %s: %v", taskID, err)
+	}
 }
 
 func (s *Scheduler) blockDependents(planID, taskID string, executionEpoch int) error {
 	events := []models.PlanEvent{}
-	err := s.store.UpdatePlan(planID, func(plan *models.PlanGraph) error {
+	err := s.updateAndPublish(planID, func(plan *models.PlanGraph) error {
 		failedTask := getNodeByID(plan, taskID)
 		// A manual retry or reassignment may have won after task_failed was
 		// published. Only the still-current failed attempt may block children.
@@ -813,32 +812,60 @@ func (s *Scheduler) blockDependents(planID, taskID string, executionEpoch int) e
 		visit(taskID)
 		fillMeta(plan)
 		return nil
-	})
+	}, func() []models.PlanEvent { return events })
 	if err != nil {
 		return err
-	}
-	if len(events) > 0 {
-		for _, event := range events {
-			s.publishAndStore(planID, event)
-		}
 	}
 	return nil
 }
 
-func (s *Scheduler) publishAndStore(planID string, event models.PlanEvent) {
+// updateAndPublish commits a state transition and its entire event batch before
+// notifying live subscribers. Event builders run under the store lock and must
+// not read from the store. Publication is best effort; history is authoritative.
+func (s *Scheduler) updateAndPublish(planID string, update func(*models.PlanGraph) error, buildEvents func() []models.PlanEvent) error {
+	var committed []models.PlanEvent
+	if err := s.store.UpdatePlanWithEvents(planID, func(plan *models.PlanGraph) ([]models.PlanEvent, error) {
+		if err := update(plan); err != nil {
+			return nil, err
+		}
+		committed = buildEvents()
+		for i := range committed {
+			prepareEvent(planID, plan.TraceID, &committed[i])
+		}
+		return committed, nil
+	}); err != nil {
+		return fmt.Errorf("commit plan transition and events: %w", err)
+	}
+	for _, event := range committed {
+		s.publisher.Publish(planID, event)
+	}
+	return nil
+}
+
+func prepareEvent(planID, traceID string, event *models.PlanEvent) {
+	event.PlanID = planID
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()
 	}
 	if event.TraceID == "" {
-		if plan, err := s.store.GetPlan(planID); err == nil && plan != nil {
-			event.TraceID = plan.TraceID
-		}
+		event.TraceID = traceID
 	}
 	if event.SpanID == "" && event.TaskID != "" {
 		event.SpanID = "task_" + event.TaskID
 	}
-	_ = s.store.AppendEvent(planID, event)
+}
+
+func (s *Scheduler) publishAndStore(planID string, event models.PlanEvent) error {
+	plan, err := s.store.GetPlan(planID)
+	if err != nil {
+		return fmt.Errorf("load plan for event: %w", err)
+	}
+	prepareEvent(planID, plan.TraceID, &event)
+	if err := s.store.AppendEvent(planID, event); err != nil {
+		return fmt.Errorf("persist %s event: %w", event.EventType, err)
+	}
 	s.publisher.Publish(planID, event)
+	return nil
 }
 
 func allTerminal(plan *models.PlanGraph) bool {

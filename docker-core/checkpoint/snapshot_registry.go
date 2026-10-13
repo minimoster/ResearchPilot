@@ -102,3 +102,21 @@ func (r *SnapshotRegistry) All() []Snapshot {
 	copy(cp, r.snapshots)
 	return cp
 }
+
+// removeImage forgets snapshots whose owned image was successfully cleaned up.
+func (r *SnapshotRegistry) removeImage(imageID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kept := r.snapshots[:0]
+	for _, snap := range r.snapshots {
+		if snap.ImageID != imageID {
+			kept = append(kept, snap)
+		}
+	}
+	clear(r.snapshots[len(kept):])
+	r.snapshots = kept
+	clear(r.index)
+	for i, snap := range r.snapshots {
+		r.index[snap.NodeID] = i
+	}
+}

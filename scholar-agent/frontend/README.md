@@ -1,8 +1,10 @@
 # Frontend verification
 
-Run `npm ci --ignore-scripts`, then `npm test`, `npm run lint`, and `npm run build` with Node.js 20.19+ (or 22.12+). The offline tests use Node's built-in test runner and the existing TypeScript compiler; they make no network requests and require no running backend.
+Run `npm ci` (project `.npmrc` disables dependency lifecycle scripts), then `npm test`, `npm run lint`, and `npm run build` with Node.js 20.19+ (or 22.12+). The offline tests use Node's built-in test runner and the existing TypeScript compiler; they make no network requests and require no running backend.
 
 The stream tests cover transient disconnection, durable replay deduplication, stale session callbacks, wrong-plan/malformed events, and terminal connection failure. Plan streams reconnect automatically and are rehydrated when switching back to a session. Full-document and selection translation are not connected to a translation service; the UI explicitly says so.
+
+See [dependency security boundaries](SECURITY_DEPENDENCIES.md) for the patched math renderer, PDF mitigation, optional native installer exposure, and remaining migration work.
 
 # React + TypeScript + Vite
 

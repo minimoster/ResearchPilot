@@ -92,6 +92,12 @@ func (s *FilePlanStore) ListPlans() ([]*models.PlanGraph, error) {
 }
 
 func (s *FilePlanStore) UpdatePlan(planID string, update func(*models.PlanGraph) error) error {
+	return s.UpdatePlanWithEvents(planID, func(plan *models.PlanGraph) ([]models.PlanEvent, error) {
+		return nil, update(plan)
+	})
+}
+
+func (s *FilePlanStore) UpdatePlanWithEvents(planID string, update func(*models.PlanGraph) ([]models.PlanEvent, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	plan, ok := s.plans[planID]
@@ -99,11 +105,17 @@ func (s *FilePlanStore) UpdatePlan(planID string, update func(*models.PlanGraph)
 		return fmt.Errorf("plan not found: %s", planID)
 	}
 	working := clonePlanGraph(plan)
-	if err := update(working); err != nil {
+	events, err := update(working)
+	if err != nil {
 		return err
 	}
-	snapshot := fileSnapshot{Plans: maps.Clone(s.plans), Events: s.events}
+	history := append([]models.PlanEvent(nil), s.events[planID]...)
+	for _, event := range events {
+		history = append(history, clonePlanEvent(event))
+	}
+	snapshot := fileSnapshot{Plans: maps.Clone(s.plans), Events: maps.Clone(s.events)}
 	snapshot.Plans[planID] = working
+	snapshot.Events[planID] = history
 	return s.persistLocked(snapshot)
 }
 

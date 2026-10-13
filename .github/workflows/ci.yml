@@ -18,6 +18,7 @@ jobs:
           cache-dependency-path: |
             scholar-agent/backend/go.sum
             scholar-agent/docker-sandbox/go.sum
+            docker-core/go.sum
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -36,3 +37,8 @@ jobs:
         working-directory: docker-core
       - run: GO111MODULE=off go test ./...
         working-directory: tool
+      - run: go test -race ./...
+        working-directory: scholar-agent/backend
+      - name: Cross-compile Windows backend commands
+        run: GOOS=windows GOARCH=amd64 go build ./cmd/api ./cmd/app
+        working-directory: scholar-agent/backend

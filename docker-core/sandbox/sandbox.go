@@ -2,7 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -20,6 +22,8 @@ type Sandbox struct {
 	session   *Session
 	truncator *Truncator
 	config    Config
+	cleanupMu sync.Mutex
+	cleanups  []func(context.Context) error
 }
 
 // New 创建并启动一个完整的沙箱实例
@@ -52,6 +56,9 @@ func New(ctx context.Context, cfg Config) (*Sandbox, error) {
 // Execute 在沙箱内执行命令，仅返回原始输出字符串
 // 特别说明：为了兼容 executor.Sandbox 接口，如果 exit code != 0，将返回错误
 func (s *Sandbox) Execute(ctx context.Context, command string) (string, error) {
+	if s.session == nil {
+		return "", fmt.Errorf("no active sandbox session")
+	}
 	result, err := s.session.Execute(ctx, command)
 	if err != nil {
 		return "", err
@@ -68,17 +75,44 @@ func (s *Sandbox) Engine() *Engine {
 	return s.engine
 }
 
-// Close 优雅关闭沙箱，释放所有资源
+// AddCleanup registers dependent resource cleanup. Hooks run after containers
+// have been removed and before the Docker client closes. A hook may be called
+// again by a later Close, so it must retain failed work and be retryable.
+func (s *Sandbox) AddCleanup(cleanup func(context.Context) error) {
+	if cleanup == nil {
+		return
+	}
+	s.cleanupMu.Lock()
+	s.cleanups = append(s.cleanups, cleanup)
+	s.cleanupMu.Unlock()
+}
+
+// Close 优雅关闭沙箱，释放所有资源。Cleanup failures can be retried by Close.
+// Stop command execution and other lifecycle calls before calling Close.
 func (s *Sandbox) Close() error {
+	var errs []error
 	if s.session != nil {
-		s.session.Close()
+		errs = append(errs, s.session.Close())
+		s.session = nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if s.engine != nil {
+		if err := s.engine.removeContainers(cleanupCtx); err != nil {
+			// Images may still be in use; defer dependent cleanup until retry.
+			return errors.Join(append(errs, err, s.engine.closeClient())...)
+		}
+	}
+	s.cleanupMu.Lock()
+	cleanups := append([]func(context.Context) error(nil), s.cleanups...)
+	s.cleanupMu.Unlock()
+	for _, cleanup := range cleanups {
+		errs = append(errs, cleanup(cleanupCtx))
 	}
 	if s.engine != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return s.engine.Destroy(cleanupCtx)
+		errs = append(errs, s.engine.closeClient())
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // ReattachSession 在回滚重建容器后重新建立 TTY 会话
@@ -87,6 +121,7 @@ func (s *Sandbox) ReattachSession(ctx context.Context) error {
 	// 关闭旧会话
 	if s.session != nil {
 		s.session.Close()
+		s.session = nil
 	}
 
 	// 用新容器建立新会话
