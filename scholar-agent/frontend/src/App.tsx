@@ -13,6 +13,7 @@ import { API_BASE_URL } from './config/env';
 
 // PDF Viewer Imports
 import { Viewer, Worker } from '@react-pdf-viewer/core';
+import { pdfWorkerUrl, safePdfDocumentParams } from './features/pdf-viewer/safePdfConfig';
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout';
 import '@react-pdf-viewer/core/lib/styles/index.css';
 import '@react-pdf-viewer/default-layout/lib/styles/index.css';
@@ -884,9 +885,10 @@ export default function App() {
               </div>
             </div>
             <div className="flex-1 overflow-y-auto relative">
-              <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js">
+              <Worker workerUrl={pdfWorkerUrl}>
                 <div style={{ height: '100%', width: '100%' }}>
                   <Viewer
+                    transformGetDocumentParams={safePdfDocumentParams}
                     fileUrl={pdfUrl}
                     plugins={[
                       defaultLayoutPluginInstance,

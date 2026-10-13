@@ -4,6 +4,7 @@ import type { Node } from '@xyflow/react';
 import type { ChatMessage, ExecuteTaskResultEvent, NodeExecutionState, Task } from '../../contracts/api';
 import { PLAN_EVENTS, isPlanTerminalEvent, pickImageBase64 } from '../../contracts/events';
 import { approvePlan, cancelPlan, createPlanEventSource, executePlan, executeTaskStream, retryTask } from '../../services/api/scholarApi';
+import { createExecutionScope } from '../../services/api/planStream';
 import type { RequestIdentity } from '../../services/api/scholarApi';
 import { getTaskStyleByStatus } from '../../features/shared/agentVisuals';
 import { createTaskNodeLabel } from '../../features/plan-graph/nodeLabelFactory';
@@ -177,14 +178,17 @@ const executionReducer = (state: ExecutionState, action: ExecutionAction): Execu
 
 interface UseScholarRuntimeOptions {
   nodes: Node[];
+  activePlanId: string | null;
   setNodes: Dispatch<SetStateAction<Node[]>>;
   appendChatMessage: (message: ChatMessage) => void;
 	identity: RequestIdentity;
 }
 
 export function useScholarRuntime(options: UseScholarRuntimeOptions) {
-	const { nodes, setNodes, appendChatMessage, identity } = options;
+	const { nodes, activePlanId, setNodes, appendChatMessage, identity } = options;
   const planEventSourceRef = useRef<EventSource | null>(null);
+  const executionScope = useRef(createExecutionScope());
+  const directAbortRef = useRef<AbortController | null>(null);
   const [executionState, dispatchExecution] = useReducer(executionReducer, {
     selectedTask: null,
     nodeStates: {},
@@ -251,12 +255,15 @@ export function useScholarRuntime(options: UseScholarRuntimeOptions) {
 
   const connectPlanStream = useCallback(
     (planId: string) => {
-      if (planEventSourceRef.current) {
-        planEventSourceRef.current.close();
-      }
+      if (planEventSourceRef.current) return;
 
+      const isCurrent = executionScope.current.capture();
       const source = createPlanEventSource(planId, {
         onPlanEvent: (event) => {
+          if (!isCurrent() || planEventSourceRef.current !== source) return;
+          if (event.event_type === 'plan_started') {
+            dispatchExecution({ type: 'set-executing', value: true });
+          }
           if (event.task_id && event.task_status) {
             updateNodeVisualState(event.task_id, event.task_status);
           }
@@ -301,7 +308,8 @@ export function useScholarRuntime(options: UseScholarRuntimeOptions) {
 
           if (isPlanTerminalEvent(event)) {
 			if (event.event_type === PLAN_EVENTS.PLAN_CANCELED) {
-				setNodes((current) => current.map((node) => updateNodeStatus(node, 'canceled')));
+				setNodes((current) => current.map((node) =>
+                  ['completed', 'failed', 'skipped'].includes(String(node.data.status)) ? node : updateNodeStatus(node, 'canceled')));
 			}
             source.close();
             planEventSourceRef.current = null;
@@ -311,15 +319,17 @@ export function useScholarRuntime(options: UseScholarRuntimeOptions) {
               text:
                 event.event_type === PLAN_EVENTS.PLAN_COMPLETED
                   ? '整张拓扑图已经执行完成。'
-                  : `计划执行失败：${String(event.payload?.error || event.payload?.reason || '未知错误')}`,
+                  : event.event_type === PLAN_EVENTS.PLAN_CANCELED
+                    ? '计划已取消，未完成任务已停止。'
+                    : `计划执行失败：${String(event.payload?.error || event.payload?.reason || '未知错误')}`,
             });
           }
         },
         onError: () => {
-          source.close();
-          if (planEventSourceRef.current === source) {
-            planEventSourceRef.current = null;
-          }
+          if (!isCurrent() || planEventSourceRef.current !== source) return;
+          planEventSourceRef.current = null;
+          dispatchExecution({ type: 'set-executing', value: false });
+          appendChatMessage({ role: 'system', text: '计划事件连接已关闭，请重新连接或检查后端；任务可能仍在执行。' });
         },
       });
 
@@ -330,6 +340,10 @@ export function useScholarRuntime(options: UseScholarRuntimeOptions) {
 
   const handleExecuteTask = useCallback(
     async (task: Task) => {
+      if (executionState.isExecuting) return;
+      const isCurrent = executionScope.current.capture();
+      const controller = new AbortController();
+      directAbortRef.current = controller;
       dispatchExecution({ type: 'set-executing', value: true });
       dispatchExecution({
         type: 'select-task',
@@ -360,12 +374,14 @@ export function useScholarRuntime(options: UseScholarRuntimeOptions) {
           },
           {
             onLog: (line) => {
+              if (!isCurrent()) return;
               patchNodeState(task.ID, (prev) => ({
                 ...prev,
                 logs: prev.logs ? `${prev.logs}\n${line}` : line,
               }));
             },
             onResult: (rawData) => {
+              if (!isCurrent()) return;
               let finalResult = rawData;
               let generatedCode = '';
               let structuredData = '';
@@ -420,11 +436,13 @@ export function useScholarRuntime(options: UseScholarRuntimeOptions) {
               updateNodeVisualState(task.ID, 'completed');
             },
             onError: (errorMessage) => {
-              throw new Error(errorMessage);
+              if (isCurrent()) throw new Error(errorMessage);
             },
           },
+          controller.signal,
         );
       } catch (error: unknown) {
+        if (!isCurrent()) return;
         console.error(error);
         const message = error instanceof Error ? error.message : String(error);
         const errorMsg =
@@ -441,12 +459,12 @@ export function useScholarRuntime(options: UseScholarRuntimeOptions) {
           text: `❌ 节点 **[${task.Name}]** 执行失败。\n\n**错误信息:**\n${errorMsg}`,
         });
         updateNodeVisualState(task.ID, 'failed');
-        throw error;
       } finally {
-        dispatchExecution({ type: 'set-executing', value: false });
+        if (directAbortRef.current === controller) directAbortRef.current = null;
+        if (isCurrent()) dispatchExecution({ type: 'set-executing', value: false });
       }
     },
-    [appendChatMessage, buildDirectExecutionInputs, executionState.nodeStates, patchNodeState, updateNodeVisualState],
+    [appendChatMessage, buildDirectExecutionInputs, executionState.isExecuting, executionState.nodeStates, patchNodeState, updateNodeVisualState],
   );
 
   const handleRunAllTasks = useCallback(
@@ -457,13 +475,16 @@ export function useScholarRuntime(options: UseScholarRuntimeOptions) {
         return;
       }
 
+      const isCurrent = executionScope.current.capture();
       dispatchExecution({ type: 'set-executing', value: true });
       appendChatMessage({ role: 'system', text: uiText.planStartMessage });
 
       try {
 		await executePlan(activePlanId, identity);
+        if (!isCurrent()) return;
         connectPlanStream(activePlanId);
       } catch (error) {
+        if (!isCurrent()) return;
         console.error(error);
         dispatchExecution({ type: 'set-executing', value: false });
         appendChatMessage({ role: 'system', text: uiText.planStartFailedMessage });
@@ -472,69 +493,77 @@ export function useScholarRuntime(options: UseScholarRuntimeOptions) {
 	[appendChatMessage, connectPlanStream, executionState.isExecuting, identity],
   );
 
-	const handleApproveAndRun = useCallback(
-		async (activePlanId: string | null) => {
-			if (!activePlanId || executionState.isExecuting) return;
-			dispatchExecution({ type: 'set-executing', value: true });
-			try {
-				await approvePlan(activePlanId, identity);
-				dispatchExecution({ type: 'set-approval-resolved', value: true });
-				await executePlan(activePlanId, identity);
-				appendChatMessage({ role: 'system', text: '计划已审批，开始执行。' });
-				connectPlanStream(activePlanId);
-			} catch (error) {
-				console.error(error);
-				dispatchExecution({ type: 'set-executing', value: false });
-				appendChatMessage({ role: 'system', text: '计划审批或启动失败，请检查运行状态。' });
-			}
-		},
-		[appendChatMessage, connectPlanStream, executionState.isExecuting, identity],
-	);
+  const handleApproveAndRun = useCallback(
+    async (planId: string | null) => {
+      if (!planId || executionState.isExecuting) return;
+      const isCurrent = executionScope.current.capture();
+      dispatchExecution({ type: 'set-executing', value: true });
+      try {
+        await approvePlan(planId, identity);
+        if (!isCurrent()) return;
+        dispatchExecution({ type: 'set-approval-resolved', value: true });
+        await executePlan(planId, identity);
+        if (!isCurrent()) return;
+        appendChatMessage({ role: 'system', text: '计划已审批，开始执行。' });
+        connectPlanStream(planId);
+      } catch (error) {
+        if (!isCurrent()) return;
+        console.error(error);
+        dispatchExecution({ type: 'set-executing', value: false });
+        appendChatMessage({ role: 'system', text: '计划审批或启动失败，请检查运行状态。' });
+      }
+    },
+    [appendChatMessage, connectPlanStream, executionState.isExecuting, identity],
+  );
 
-	const handleCancelPlan = useCallback(
-		async (activePlanId: string | null) => {
-			if (!activePlanId) return;
-			try {
-				await cancelPlan(activePlanId, identity);
-				planEventSourceRef.current?.close();
-				planEventSourceRef.current = null;
-				setNodes((current) => current.map((node) => updateNodeStatus(node, 'canceled')));
-				dispatchExecution({ type: 'set-executing', value: false });
-				appendChatMessage({ role: 'system', text: '计划已取消，未完成任务已停止。' });
-			} catch (error) {
-				console.error(error);
-				appendChatMessage({ role: 'system', text: '取消计划失败，请刷新计划状态后重试。' });
-			}
-		},
-		[appendChatMessage, identity, setNodes],
-	);
+  const handleCancelPlan = useCallback(
+    async (planId: string | null) => {
+      if (!planId) return;
+      const isCurrent = executionScope.current.capture();
+      try {
+        await cancelPlan(planId, identity);
+        if (!isCurrent()) return;
+        planEventSourceRef.current?.close();
+        planEventSourceRef.current = null;
+        setNodes((current) => current.map((node) =>
+          ['completed', 'failed', 'skipped'].includes(String(node.data.status)) ? node : updateNodeStatus(node, 'canceled')));
+        dispatchExecution({ type: 'set-executing', value: false });
+        appendChatMessage({ role: 'system', text: '计划已取消，未完成任务已停止。' });
+      } catch (error) {
+        if (!isCurrent()) return;
+        console.error(error);
+        appendChatMessage({ role: 'system', text: '取消计划失败，请刷新计划状态后重试。' });
+      }
+    },
+    [appendChatMessage, identity, setNodes],
+  );
 
-	const handleRetryFailedPlan = useCallback(
-		async (activePlanId: string | null) => {
-			if (!activePlanId || executionState.isExecuting) return;
-			const failedNode = nodes.find((node) => node.data.status === 'failed');
-			if (!failedNode) return;
-			dispatchExecution({ type: 'set-executing', value: true });
-			try {
-				await retryTask(activePlanId, failedNode.id, identity);
-				setNodes((current) =>
-					current.map((node) =>
-						['failed', 'blocked', 'canceled'].includes(String(node.data.status))
-							? updateNodeStatus(node, 'pending')
-							: node,
-					),
-				);
-				await executePlan(activePlanId, identity);
-				appendChatMessage({ role: 'system', text: '失败节点已重置，计划开始重试。' });
-				connectPlanStream(activePlanId);
-			} catch (error) {
-				console.error(error);
-				dispatchExecution({ type: 'set-executing', value: false });
-				appendChatMessage({ role: 'system', text: '重试计划失败，请检查节点状态。' });
-			}
-		},
-		[appendChatMessage, connectPlanStream, executionState.isExecuting, identity, nodes, setNodes],
-	);
+  const handleRetryFailedPlan = useCallback(
+    async (planId: string | null) => {
+      if (!planId || executionState.isExecuting) return;
+      const failedNode = nodes.find((node) => node.data.status === 'failed');
+      if (!failedNode) return;
+      const isCurrent = executionScope.current.capture();
+      dispatchExecution({ type: 'set-executing', value: true });
+      try {
+        await retryTask(planId, failedNode.id, identity);
+        if (!isCurrent()) return;
+        setNodes((current) => current.map((node) =>
+          node.id === failedNode.id || node.data.status === 'blocked'
+            ? updateNodeStatus(node, 'pending') : node));
+        await executePlan(planId, identity);
+        if (!isCurrent()) return;
+        appendChatMessage({ role: 'system', text: '失败节点已重置，计划开始重试。' });
+        connectPlanStream(planId);
+      } catch (error) {
+        if (!isCurrent()) return;
+        console.error(error);
+        dispatchExecution({ type: 'set-executing', value: false });
+        appendChatMessage({ role: 'system', text: '重试计划失败，请检查节点状态。' });
+      }
+    },
+    [appendChatMessage, connectPlanStream, executionState.isExecuting, identity, nodes, setNodes],
+  );
 
   const onNodeClick = useCallback(
     (_: unknown, node: Node) => {
@@ -567,15 +596,6 @@ export function useScholarRuntime(options: UseScholarRuntimeOptions) {
     [appendNodeLog, executionState.selectedTask],
   );
 
-  useEffect(
-    () => () => {
-      if (planEventSourceRef.current) {
-        planEventSourceRef.current.close();
-      }
-    },
-    [],
-  );
-
   const setDisplayMode = useCallback(
     (mode: ExecutionDisplayMode) => {
       dispatchExecution({ type: 'set-display-mode', mode });
@@ -588,8 +608,26 @@ export function useScholarRuntime(options: UseScholarRuntimeOptions) {
   }, []);
 
   const resetRuntimeState = useCallback(() => {
+    executionScope.current.invalidate();
+    planEventSourceRef.current?.close();
+    planEventSourceRef.current = null;
+    directAbortRef.current?.abort();
+    directAbortRef.current = null;
     dispatchExecution({ type: 'reset' });
   }, []);
+
+  useEffect(() => {
+    const scope = executionScope.current;
+    resetRuntimeState();
+    if (activePlanId) connectPlanStream(activePlanId);
+    return () => {
+      scope.invalidate();
+      planEventSourceRef.current?.close();
+      planEventSourceRef.current = null;
+      directAbortRef.current?.abort();
+      directAbortRef.current = null;
+    };
+  }, [activePlanId, identity.userId, identity.sessionId, connectPlanStream, resetRuntimeState]);
 
   return {
     executionState,

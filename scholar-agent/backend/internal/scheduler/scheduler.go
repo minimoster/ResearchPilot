@@ -137,7 +137,9 @@ func (s *Scheduler) ReassignTask(planID, taskID, assignedTo string) error {
 		}
 		task.AssignedTo = assignedTo
 		resetTaskForRetry(task, now)
+		resetBlockedDependents(plan, taskID, now)
 		plan.Status = models.StatusPending
+		plan.Usage.FinishedAt = nil
 		plan.UpdatedAt = now
 		fillMeta(plan)
 		return nil
@@ -182,6 +184,11 @@ executionLoop:
 	for {
 		select {
 		case <-ctx.Done():
+			// The run context also carries the API-level duration budget.
+			// Invalidate leases and publish a terminal state before abandoning it.
+			if err := s.CancelPlan(planID, ctx.Err().Error()); err != nil {
+				log.Printf("scheduler: finalize canceled context for plan %s: %v", planID, err)
+			}
 			return ctx.Err()
 		default:
 		}
@@ -221,6 +228,12 @@ executionLoop:
 		}
 
 		availableSlots := s.maxConcurrent - countInProgress(plan)
+		if plan.Budget.MaxTaskAttempts > 0 {
+			remainingAttempts := plan.Budget.MaxTaskAttempts - plan.Usage.TaskAttempts
+			if availableSlots > remainingAttempts {
+				availableSlots = remainingAttempts
+			}
+		}
 		ready := s.findReadyNodes(plan, availableSlots)
 		if len(ready) == 0 {
 			if allTerminal(plan) {
@@ -458,7 +471,7 @@ func (s *Scheduler) runReadyNodes(ctx context.Context, planID string, ready []*m
 					return
 				}
 				if !retrying && shouldBlockOnFailure(currentTask) {
-					if err := s.blockDependents(planID, taskID); err != nil {
+					if err := s.blockDependents(planID, taskID, currentTask.ExecutionEpoch); err != nil {
 						log.Printf("scheduler: blockDependents failed for %s: %v", taskID, err)
 						return
 					}
@@ -762,9 +775,15 @@ func (s *Scheduler) publishDiscardedResult(planID, taskID, executionID, leaseOwn
 	})
 }
 
-func (s *Scheduler) blockDependents(planID, taskID string) error {
+func (s *Scheduler) blockDependents(planID, taskID string, executionEpoch int) error {
 	events := []models.PlanEvent{}
 	err := s.store.UpdatePlan(planID, func(plan *models.PlanGraph) error {
+		failedTask := getNodeByID(plan, taskID)
+		// A manual retry or reassignment may have won after task_failed was
+		// published. Only the still-current failed attempt may block children.
+		if failedTask == nil || failedTask.Status != models.StatusFailed || failedTask.ExecutionEpoch != executionEpoch {
+			return nil
+		}
 		visited := map[string]bool{}
 		var visit func(string)
 		visit = func(currentID string) {

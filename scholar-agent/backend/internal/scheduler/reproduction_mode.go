@@ -47,6 +47,14 @@ func decideReproductionMode(task *models.Task, workspacePath string) Reproductio
 	return DecidePaperReproductionMode(requestedMode, fullRequested, workspacePath)
 }
 
+// FullReproductionRequested reports whether runtime configuration can select a
+// full run. Approval checks use the same normalization and environment override
+// as execution, before probing resources or starting any work.
+func FullReproductionRequested(requestedMode string, fullRequested bool) bool {
+	mode := normalizeReproductionMode(chooseNonEmpty(os.Getenv("PAPER_REPRO_MODE"), requestedMode))
+	return mode == reproductionModeFull || (mode == reproductionModeAuto && fullRequested)
+}
+
 func DecidePaperReproductionMode(requestedMode string, fullRequested bool, workspacePath string) ReproductionModeDecision {
 	requestedMode = normalizeReproductionMode(chooseNonEmpty(os.Getenv("PAPER_REPRO_MODE"), requestedMode))
 	if requestedMode == "" {

@@ -200,9 +200,18 @@ func (s *SandboxService) DeleteSandbox(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "opensandbox fallback is disabled"})
 			return
 		}
-		s.osEngine.Delete(ctx, strings.TrimPrefix(id, "os-"))
+		if err := s.osEngine.Delete(ctx, strings.TrimPrefix(id, "os-")); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	} else if strings.HasPrefix(id, "dk-") {
-		s.dkEngine.Delete(ctx, strings.TrimPrefix(id, "dk-"))
+		if err := s.dkEngine.Delete(ctx, strings.TrimPrefix(id, "dk-")); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown sandbox id prefix"})
+		return
 	}
 	c.Status(http.StatusOK)
 }
@@ -395,12 +404,21 @@ func writeStreamError(w io.Writer, flusher http.Flusher, err error) {
 	flusher.Flush()
 }
 
+// Remote clients require an explicitly configured bearer token. Local development
+// remains available without credentials, bound only to the loopback interface.
+func sandboxListenAddr() string {
+	if strings.TrimSpace(os.Getenv("SANDBOX_API_TOKEN")) == "" {
+		return "127.0.0.1:8082"
+	}
+	return ":8082"
+}
+
 func main() {
 	configureFileLogging()
 
 	osURL := os.Getenv("OPEN_SANDBOX_URL")
 	enableFallback := strings.EqualFold(os.Getenv("ENABLE_OPENSANDBOX_FALLBACK"), "true")
-	listenAddr := ":8082"
+	listenAddr := sandboxListenAddr()
 
 	svc := NewSandboxService(Config{
 		OpenSandboxURL: osURL,

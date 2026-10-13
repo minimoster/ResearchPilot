@@ -670,7 +670,7 @@ func validatePlanGraph(plan *models.PlanGraph) error {
 		if _, ok := nodeMap[edge.To]; !ok {
 			return fmt.Errorf("edge target not found: %s", edge.To)
 		}
-		if edge.Type == "control" {
+		if edge.Type == "control" || edge.Type == "data" {
 			inDegree[edge.To]++
 			adj[edge.From] = append(adj[edge.From], edge.To)
 		}
@@ -683,8 +683,12 @@ func validatePlanGraph(plan *models.PlanGraph) error {
 			}
 		}
 		for _, key := range node.RequiredArtifacts {
-			if _, ok := artifactProducers[key]; !ok {
+			producer, ok := artifactProducers[key]
+			if !ok {
 				return fmt.Errorf("required artifact has no producer for node %s: %s", node.ID, key)
+			}
+			if producer == node.ID {
+				return fmt.Errorf("node %s requires its own output artifact: %s", node.ID, key)
 			}
 		}
 	}
@@ -711,7 +715,7 @@ func validatePlanGraph(plan *models.PlanGraph) error {
 	}
 
 	if visited != len(plan.Nodes) {
-		return fmt.Errorf("cycle detected in control edges")
+		return fmt.Errorf("cycle detected in control or data edges")
 	}
 
 	return nil

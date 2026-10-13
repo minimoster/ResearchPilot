@@ -5,19 +5,25 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"scholar-agent-backend/internal/sandbox"
 )
 
+var containerIDPattern = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
+
 type NativeDockerEngine struct {
-	mu         sync.RWMutex
-	mountPaths map[string]string
+	mu            sync.RWMutex
+	mountPaths    map[string]string
+	inspectLabels func(context.Context, string) (map[string]string, error)
 }
 
 type streamChunk struct {
@@ -36,7 +42,8 @@ type DockerHealth struct {
 
 func NewNativeDockerEngine() *NativeDockerEngine {
 	return &NativeDockerEngine{
-		mountPaths: make(map[string]string),
+		mountPaths:    make(map[string]string),
+		inspectLabels: inspectDockerLabels,
 	}
 }
 
@@ -113,6 +120,7 @@ func (e *NativeDockerEngine) Create(ctx context.Context, image string, mountPath
 		if err != nil {
 			return "", err
 		}
+		mountPath = normalizedMountPath
 		args = append(args, "-v", fmt.Sprintf("%s:/workspace", normalizedMountPath))
 	}
 	args = append(args, image, "sleep", "infinity")
@@ -127,22 +135,75 @@ func (e *NativeDockerEngine) Create(ctx context.Context, image string, mountPath
 	if containerID == "" {
 		return "", fmt.Errorf("docker run returned empty container id, output: %s", string(output))
 	}
-	if mountPath != "" {
-		e.mu.Lock()
-		e.mountPaths[containerID] = mountPath
-		e.mu.Unlock()
-	}
+	e.mu.Lock()
+	e.mountPaths[containerID] = mountPath
+	e.mu.Unlock()
 	return containerID, nil
 }
 
+// validateSandboxID prevents API-supplied values from becoming Docker CLI options.
+// Ownership authorization additionally requires the persistent managed label below.
+func validateSandboxID(id string) error {
+	if !containerIDPattern.MatchString(id) {
+		return fmt.Errorf("invalid sandbox id %q", id)
+	}
+	return nil
+}
+
+// managedSandboxLabel is shared by the standalone and embedded sandbox services.
+// Containers created before this label was introduced must be recreated; they
+// are deliberately not adopted automatically during an upgrade.
+const managedSandboxLabel = "org.openresearch.sandbox.managed"
+
+func inspectDockerLabels(ctx context.Context, id string) (map[string]string, error) {
+	inspectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(inspectCtx, dockerCommand(), "inspect", "--type", "container", "--format", "{{json .Config.Labels}}", id).Output()
+	if err != nil {
+		return nil, fmt.Errorf("inspect sandbox ownership: %w", err)
+	}
+	var labels map[string]string
+	if err := json.Unmarshal(output, &labels); err != nil {
+		return nil, fmt.Errorf("decode sandbox labels: %w", err)
+	}
+	return labels, nil
+}
+
+func (e *NativeDockerEngine) requireManagedSandbox(ctx context.Context, id string) error {
+	if err := validateSandboxID(id); err != nil {
+		return err
+	}
+	inspect := e.inspectLabels
+	if inspect == nil {
+		inspect = inspectDockerLabels
+	}
+	labels, err := inspect(ctx, id)
+	if err != nil {
+		return err
+	}
+	if labels[managedSandboxLabel] != "true" {
+		return fmt.Errorf("container %s is not managed by this sandbox service; recreate legacy unlabeled sandboxes", id)
+	}
+	return nil
+}
+
 func (e *NativeDockerEngine) Delete(ctx context.Context, id string) error {
+	if err := e.requireManagedSandbox(ctx, id); err != nil {
+		return err
+	}
+	if err := exec.CommandContext(ctx, dockerCommand(), "rm", "-f", id).Run(); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	delete(e.mountPaths, id)
 	e.mu.Unlock()
-	return exec.CommandContext(ctx, dockerCommand(), "rm", "-f", id).Run()
+	return nil
 }
 
 func (e *NativeDockerEngine) ExecutePython(ctx context.Context, id string, code string) (*ExecutionResponse, error) {
+	if err := e.requireManagedSandbox(ctx, id); err != nil {
+		return nil, err
+	}
 	cmd := exec.CommandContext(ctx, dockerCommand(), "exec", id, "python3", "-c", code)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -162,6 +223,9 @@ func (e *NativeDockerEngine) ExecutePython(ctx context.Context, id string, code 
 }
 
 func (e *NativeDockerEngine) ExecutePythonStream(ctx context.Context, id string, code string, emit func(ExecutionStreamEvent) error) (*ExecutionResponse, error) {
+	if err := e.requireManagedSandbox(ctx, id); err != nil {
+		return nil, err
+	}
 	cmd := exec.CommandContext(ctx, dockerCommand(), "exec", id, "python3", "-c", code)
 	response, err := e.runStreamingCommand(cmd, emit)
 	if err != nil {
@@ -178,6 +242,9 @@ func (e *NativeDockerEngine) ExecutePythonStream(ctx context.Context, id string,
 }
 
 func (e *NativeDockerEngine) ExecuteCommand(ctx context.Context, id string, cmdArr []string) (*ExecutionResponse, error) {
+	if err := e.requireManagedSandbox(ctx, id); err != nil {
+		return nil, err
+	}
 	args := append([]string{"exec", id}, cmdArr...)
 	cmd := exec.CommandContext(ctx, dockerCommand(), args...)
 	var stdout, stderr bytes.Buffer
@@ -193,6 +260,9 @@ func (e *NativeDockerEngine) ExecuteCommand(ctx context.Context, id string, cmdA
 }
 
 func (e *NativeDockerEngine) ExecuteCommandStream(ctx context.Context, id string, cmdArr []string, emit func(ExecutionStreamEvent) error) (*ExecutionResponse, error) {
+	if err := e.requireManagedSandbox(ctx, id); err != nil {
+		return nil, err
+	}
 	args := append([]string{"exec", id}, cmdArr...)
 	cmd := exec.CommandContext(ctx, dockerCommand(), args...)
 	response, err := e.runStreamingCommand(cmd, emit)
@@ -216,17 +286,11 @@ func (e *NativeDockerEngine) attachOutputImage(id string, response *ExecutionRes
 		return
 	}
 
-	plotPath := filepath.Join(mountPath, "output_plot.png")
-	if _, err := os.Stat(plotPath); err != nil {
-		return
-	}
-
-	imgData, err := os.ReadFile(plotPath)
+	imgData, err := sandbox.ReadOutputImage(mountPath)
 	if err != nil {
 		return
 	}
 	response.Images = []string{base64.StdEncoding.EncodeToString(imgData)}
-	_ = os.Remove(plotPath)
 }
 
 func (e *NativeDockerEngine) runStreamingCommand(cmd *exec.Cmd, emit func(ExecutionStreamEvent) error) (*ExecutionResponse, error) {
@@ -234,51 +298,62 @@ func (e *NativeDockerEngine) runStreamingCommand(cmd *exec.Cmd, emit func(Execut
 	if err != nil {
 		return nil, err
 	}
+	defer stdoutPipe.Close()
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, err
 	}
+	defer stderrPipe.Close()
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	chunks := make(chan streamChunk, 64)
+	done := make(chan struct{})
+	readErrors := make(chan error, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
+	go func() { defer wg.Done(); readErrors <- readPipeLines(stdoutPipe, "stdout", &stdoutBuf, chunks, done) }()
+	go func() { defer wg.Done(); readErrors <- readPipeLines(stderrPipe, "stderr", &stderrBuf, chunks, done) }()
+	go func() { wg.Wait(); close(chunks) }()
 
-	go func() {
-		defer wg.Done()
-		readPipeLines(stdoutPipe, "stdout", &stdoutBuf, chunks)
-	}()
-	go func() {
-		defer wg.Done()
-		readPipeLines(stderrPipe, "stderr", &stderrBuf, chunks)
-	}()
-	go func() {
-		wg.Wait()
-		close(chunks)
-	}()
-
-	for chunk := range chunks {
-		if emit == nil {
-			continue
+	// Always reap the CLI and unblock readers, even when the HTTP writer fails.
+	// Killing this CLI alone does not stop a Docker daemon-side exec process.
+	waited := false
+	defer func() {
+		close(done)
+		if !waited {
+			_ = cmd.Process.Kill()
+			_ = stdoutPipe.Close()
+			_ = stderrPipe.Close()
+			_ = cmd.Wait()
 		}
-		if emitErr := emit(ExecutionStreamEvent{
-			Type:    "chunk",
-			Stream:  chunk.stream,
-			Message: chunk.line,
-		}); emitErr != nil {
-			return nil, emitErr
+		wg.Wait()
+	}()
+	readersDone := 0
+	for chunks != nil || readersDone < 2 {
+		select {
+		case readErr := <-readErrors:
+			readersDone++
+			if readErr != nil {
+				return nil, fmt.Errorf("read command output: %w", readErr)
+			}
+		case chunk, ok := <-chunks:
+			if !ok {
+				chunks = nil
+				continue
+			}
+			if emit != nil {
+				if err := emit(ExecutionStreamEvent{Type: "chunk", Stream: chunk.stream, Message: chunk.line}); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
-
 	waitErr := cmd.Wait()
-	return &ExecutionResponse{
-		Stdout:   stdoutBuf.String(),
-		Stderr:   stderrBuf.String(),
-		ExitCode: resolveExitCode(waitErr),
-	}, nil
+	waited = true
+	return &ExecutionResponse{Stdout: stdoutBuf.String(), Stderr: stderrBuf.String(), ExitCode: resolveExitCode(waitErr)}, nil
 }
 
 func extractContainerIDFromDockerRunOutput(raw string) string {
@@ -288,7 +363,9 @@ func extractContainerIDFromDockerRunOutput(raw string) string {
 		if line == "" {
 			continue
 		}
-		return line
+		if containerIDPattern.MatchString(line) {
+			return line
+		}
 	}
 	return ""
 }
@@ -310,14 +387,21 @@ func resolveExitCode(err error) int {
 	return -1
 }
 
-func readPipeLines(reader io.Reader, stream string, sink *bytes.Buffer, out chan<- streamChunk) {
+func readPipeLines(reader io.Reader, stream string, sink *bytes.Buffer, out chan<- streamChunk, done <-chan struct{}) error {
 	scanner := bufio.NewScanner(reader)
-	buffer := make([]byte, 0, 64*1024)
-	scanner.Buffer(buffer, 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
+		if sink.Len()+len(line)+1 > 8<<20 {
+			return fmt.Errorf("command output exceeds 8 MiB limit")
+		}
 		sink.WriteString(line)
 		sink.WriteByte('\n')
-		out <- streamChunk{stream: stream, line: line}
+		select {
+		case out <- streamChunk{stream: stream, line: line}:
+		case <-done:
+			return nil
+		}
 	}
+	return scanner.Err()
 }

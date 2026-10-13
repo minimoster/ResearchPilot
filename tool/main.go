@@ -29,19 +29,16 @@ type LLMResponse struct {
 
 func FakeLLM(messages []Message) LLMResponse {
 
+	if len(messages) == 0 {
+		return LLMResponse{}
+	}
 	last := messages[len(messages)-1].Content
 
 	// 简单规则模拟 LLM 决策
 	if len(messages) == 1 {
-		args, err := json.Marshal(map[string]string{
-			"query": last,
-		})
-		if err != nil {
-			args = []byte(`{"query":""}`)
-		// json.Marshal on a map[string]string is always safe; the error branch guards against future type changes.
 		args, err := json.Marshal(map[string]string{"query": last})
 		if err != nil {
-			args = json.RawMessage(`{"query":""}`)
+			return LLMResponse{Content: "Unable to encode tool arguments."}
 		}
 		return LLMResponse{
 			ToolCall: &ToolCall{

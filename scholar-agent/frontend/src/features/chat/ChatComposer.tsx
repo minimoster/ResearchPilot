@@ -93,9 +93,9 @@ export function ChatComposer(props: ChatComposerProps) {
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
-              onSendMessage();
+              if (!loading && !uploadingAttachments) onSendMessage();
             }
           }}
           placeholder={

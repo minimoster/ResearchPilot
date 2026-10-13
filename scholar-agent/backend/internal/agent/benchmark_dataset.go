@@ -162,22 +162,30 @@ func selectBenchmarkDatasetFile(files []benchmarkUploadedFile) (benchmarkUploade
 }
 
 func readBenchmarkRows(file benchmarkUploadedFile) ([]map[string]string, int, error) {
+	return readBenchmarkRowsWithLimit(file, benchmarkDatasetSampleLimit)
+}
+
+func readBenchmarkRowsWithLimit(file benchmarkUploadedFile, sampleLimit int) ([]map[string]string, int, error) {
 	ext := strings.ToLower(filepath.Ext(file.Name))
 	switch ext {
 	case ".csv":
-		return readDelimitedBenchmarkRows(file.StoragePath, ',')
+		return readDelimitedBenchmarkRowsWithLimit(file.StoragePath, sampleLimit, ',')
 	case ".tsv":
-		return readDelimitedBenchmarkRows(file.StoragePath, '\t')
+		return readDelimitedBenchmarkRowsWithLimit(file.StoragePath, sampleLimit, '\t')
 	case ".json":
-		return readJSONBenchmarkRows(file.StoragePath)
+		return readJSONBenchmarkRowsWithLimit(file.StoragePath, sampleLimit)
 	case ".jsonl":
-		return readJSONLBenchmarkRows(file.StoragePath)
+		return readJSONLBenchmarkRowsWithLimit(file.StoragePath, sampleLimit)
 	default:
 		return nil, 0, fmt.Errorf("unsupported dataset format %s", ext)
 	}
 }
 
 func readDelimitedBenchmarkRows(path string, delimiter rune) ([]map[string]string, int, error) {
+	return readDelimitedBenchmarkRowsWithLimit(path, benchmarkDatasetSampleLimit, delimiter)
+}
+
+func readDelimitedBenchmarkRowsWithLimit(path string, sampleLimit int, delimiter rune) ([]map[string]string, int, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, 0, err
@@ -191,7 +199,7 @@ func readDelimitedBenchmarkRows(path string, delimiter rune) ([]map[string]strin
 		return nil, 0, fmt.Errorf("read dataset header: %w", err)
 	}
 	header = normalizeBenchmarkHeader(header)
-	rows := make([]map[string]string, 0, benchmarkMinInt(benchmarkDatasetSampleLimit, 64))
+	rows := make([]map[string]string, 0, benchmarkMinInt(sampleLimit, 64))
 	count := 0
 	for {
 		record, readErr := reader.Read()
@@ -202,7 +210,7 @@ func readDelimitedBenchmarkRows(path string, delimiter rune) ([]map[string]strin
 			return nil, 0, fmt.Errorf("read dataset row %d: %w", count+2, readErr)
 		}
 		count++
-		if len(rows) >= benchmarkDatasetSampleLimit {
+		if len(rows) >= sampleLimit {
 			continue
 		}
 		row := make(map[string]string, len(header))
@@ -219,12 +227,16 @@ func readDelimitedBenchmarkRows(path string, delimiter rune) ([]map[string]strin
 }
 
 func readJSONBenchmarkRows(path string) ([]map[string]string, int, error) {
+	return readJSONBenchmarkRowsWithLimit(path, benchmarkDatasetSampleLimit)
+}
+
+func readJSONBenchmarkRowsWithLimit(path string, sampleLimit int) ([]map[string]string, int, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, 0, err
 	}
 	var payload any
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	if err := decodeBenchmarkJSON(raw, &payload); err != nil {
 		return nil, 0, fmt.Errorf("decode JSON dataset: %w", err)
 	}
 	values, ok := payload.([]any)
@@ -242,13 +254,13 @@ func readJSONBenchmarkRows(path string) ([]map[string]string, int, error) {
 	if !ok {
 		return nil, 0, fmt.Errorf("JSON dataset must be an array of objects or contain data/records/items/examples")
 	}
-	rows := make([]map[string]string, 0, benchmarkMinInt(len(values), benchmarkDatasetSampleLimit))
+	rows := make([]map[string]string, 0, benchmarkMinInt(len(values), sampleLimit))
 	for index, value := range values {
 		object, objectOK := value.(map[string]any)
 		if !objectOK {
 			return nil, 0, fmt.Errorf("JSON record %d is not an object", index+1)
 		}
-		if len(rows) < benchmarkDatasetSampleLimit {
+		if len(rows) < sampleLimit {
 			rows = append(rows, stringifyBenchmarkRow(object))
 		}
 	}
@@ -256,6 +268,10 @@ func readJSONBenchmarkRows(path string) ([]map[string]string, int, error) {
 }
 
 func readJSONLBenchmarkRows(path string) ([]map[string]string, int, error) {
+	return readJSONLBenchmarkRowsWithLimit(path, benchmarkDatasetSampleLimit)
+}
+
+func readJSONLBenchmarkRowsWithLimit(path string, sampleLimit int) ([]map[string]string, int, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, 0, err
@@ -272,10 +288,10 @@ func readJSONLBenchmarkRows(path string) ([]map[string]string, int, error) {
 		}
 		count++
 		var object map[string]any
-		if err := json.Unmarshal([]byte(line), &object); err != nil {
+		if err := decodeBenchmarkJSON([]byte(line), &object); err != nil {
 			return nil, 0, fmt.Errorf("decode JSONL record %d: %w", count, err)
 		}
-		if len(rows) < benchmarkDatasetSampleLimit {
+		if len(rows) < sampleLimit {
 			rows = append(rows, stringifyBenchmarkRow(object))
 		}
 	}
@@ -488,4 +504,17 @@ func sha256File(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// Preserve numeric labels exactly, including integers beyond float64 precision.
+func decodeBenchmarkJSON(raw []byte, output any) error {
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(output); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("trailing JSON content")
+	}
+	return nil
 }

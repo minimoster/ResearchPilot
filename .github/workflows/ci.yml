@@ -25,10 +25,14 @@ jobs:
           cache-dependency-path: scholar-agent/frontend/package-lock.json
       - run: npm ci
         working-directory: scholar-agent/frontend
-      - run: npm run lint && npm run build
+      - run: npm run lint && npm test && npm run build
         working-directory: scholar-agent/frontend
       - run: go test ./...
         working-directory: scholar-agent/backend
       - run: go test ./...
         working-directory: scholar-agent/docker-sandbox
       - run: python3 -m unittest discover -s examples/paper-reproduction -p 'test_*.py'
+      - run: go test ./...
+        working-directory: docker-core
+      - run: GO111MODULE=off go test ./...
+        working-directory: tool

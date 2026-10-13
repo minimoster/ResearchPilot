@@ -185,3 +185,29 @@ func TestPaperReproductionRoutesRepositoryDebugToResearchCodingAgent(t *testing.
 		t.Fatalf("claim graph outputs are incomplete: %#v", evidence.OutputArtifacts)
 	}
 }
+
+func TestValidatePlanGraphRejectsArtifactCycles(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		nodes []*models.TaskNode
+	}{
+		{"data only", []*models.TaskNode{
+			{ID: "a", RequiredArtifacts: []string{"b_out"}, OutputArtifacts: []string{"a_out"}},
+			{ID: "b", RequiredArtifacts: []string{"a_out"}, OutputArtifacts: []string{"b_out"}},
+		}},
+		{"mixed control and data", []*models.TaskNode{
+			{ID: "a", Dependencies: []string{"b"}, OutputArtifacts: []string{"a_out"}},
+			{ID: "b", RequiredArtifacts: []string{"a_out"}},
+		}},
+		{"self artifact", []*models.TaskNode{
+			{ID: "a", RequiredArtifacts: []string{"a_out"}, OutputArtifacts: []string{"a_out"}},
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := &models.PlanGraph{Nodes: test.nodes, Edges: buildEdgesFromNodes(test.nodes)}
+			if err := validatePlanGraph(plan); err == nil {
+				t.Fatal("accepted an artifact dependency cycle that cannot execute")
+			}
+		})
+	}
+}

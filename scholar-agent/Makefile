@@ -12,7 +12,7 @@ help:
 	@echo "  make lint          - Run frontend lint"
 	@echo "  make build         - Build frontend, backend and sandbox"
 	@echo "  make package       - Build a single executable with embedded frontend and sandbox"
-	@echo "  make test          - Run backend, sandbox and offline example tests"
+	@echo "  make test          - Run frontend, all Go modules, tools and offline examples"
 	@echo "  make eval          - Run the deterministic Agent planning evaluation dataset"
 	@echo "  make example-paper-reproduction - Run the live Attention smoke example"
 	@echo "  make run-sandbox   - Start docker-sandbox locally via scripts/unix/"
@@ -52,6 +52,9 @@ package:
 	cd backend && go build -o bin/scholar-agent ./cmd/app
 
 test:
+	cd frontend && npm test
+	cd ../docker-core && go test ./...
+	cd ../tool && GO111MODULE=off go test ./...
 	cd backend && go test ./...
 	cd docker-sandbox && go test ./...
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s examples/paper-reproduction -p 'test_*.py'

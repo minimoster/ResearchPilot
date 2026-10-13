@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -81,7 +82,11 @@ func createContainer(ctx context.Context, cli *client.Client, cfg Config) (*Engi
 
 	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		// 启动失败则清理已创建的容器
-		cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if cleanupErr := cli.ContainerRemove(cleanupCtx, resp.ID, container.RemoveOptions{Force: true}); cleanupErr != nil {
+			return nil, fmt.Errorf("failed to start container: %w; cleanup failed: %v", err, cleanupErr)
+		}
 		return nil, fmt.Errorf("failed to start container: %w", err)
 	}
 

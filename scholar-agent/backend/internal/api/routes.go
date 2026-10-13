@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"scholar-agent-backend/internal/agent"
 	"scholar-agent-backend/internal/models"
@@ -154,8 +153,10 @@ func SetupRoutes(r *gin.Engine) {
 			}
 			log.Printf("[PDF Proxy] Fetching host: %s", validatedURL.Hostname())
 
+			transport := safeRemoteTransport()
+			defer transport.CloseIdleConnections()
 			client := &http.Client{
-				Transport: safeRemoteTransport(),
+				Transport: transport,
 				Timeout:   30 * time.Second,
 				CheckRedirect: func(req *http.Request, via []*http.Request) error {
 					if len(via) >= 5 {
@@ -254,24 +255,29 @@ func SetupRoutes(r *gin.Engine) {
 			ctx = context.WithValue(ctx, "taskID", task.ID)
 
 			// Create a workspace directory for the task
-			workspacePath := filepath.Join("/tmp", "scholar_workspace_"+task.ID)
-			_ = os.MkdirAll(workspacePath, 0777)
+			// Task IDs are caller-controlled and may repeat across sessions. A
+			// fresh private directory prevents path traversal and workspace reuse.
+			workspacePath, workspaceErr := os.MkdirTemp("", "scholar_workspace_")
+			if workspaceErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot create execution workspace"})
+				return
+			}
 
 			// Initialize persistent sandbox for this task
 			// 先同步创建沙箱，再将 containerID 注入 context，避免 goroutine 内竞态
 			var containerID string
 			if sb != nil && shouldAllocateDirectSandbox(task) {
-				logChannel <- "[System] 正在通过 OpenSandbox 服务分配持久化沙箱环境..."
+				sendExecutionLog(ctx, logChannel, "[System] 正在通过 OpenSandbox 服务分配持久化沙箱环境...")
 				var sandboxErr error
 				containerID, sandboxErr = sb.CreatePersistentSandbox(ctx, task.ID, "python:3.9-bullseye", workspacePath)
 				if sandboxErr != nil {
-					logChannel <- fmt.Sprintf("[Warning] 创建沙箱失败，将降级为临时沙箱模式: %v", sandboxErr)
+					sendExecutionLog(ctx, logChannel, fmt.Sprintf("[Warning] 创建沙箱失败，将降级为临时沙箱模式: %v", sandboxErr))
 				} else {
 					typeStr := "OpenSandbox"
 					if len(containerID) > 3 && containerID[:3] == "dk-" {
 						typeStr = "原生 Docker (已启动兜底方案)"
 					}
-					logChannel <- fmt.Sprintf("[System] %s 沙箱创建成功 (ID: %s)", typeStr, containerID)
+					sendExecutionLog(ctx, logChannel, fmt.Sprintf("[System] %s 沙箱创建成功 (ID: %s)", typeStr, containerID))
 					ctx = context.WithValue(ctx, "containerID", containerID)
 					if task.Inputs == nil {
 						task.Inputs = map[string]any{}
@@ -280,7 +286,7 @@ func SetupRoutes(r *gin.Engine) {
 					task.Inputs["prepared_runtime"] = containerID
 				}
 			}
-			logChannel <- formatExecuteParamsLog("[Params] 后端实际传入参数", task.Inputs)
+			sendExecutionLog(ctx, logChannel, formatExecuteParamsLog("[Params] 后端实际传入参数", task.Inputs))
 
 			go func() {
 				var err error
@@ -299,24 +305,31 @@ func SetupRoutes(r *gin.Engine) {
 
 				// Check if an image was generated in the workspace
 				if containerID != "" {
-					plotPath := filepath.Join("/tmp/scholar_workspace_"+task.ID, "output_plot.png")
-					if _, err := os.Stat(plotPath); err == nil {
-						logChannel <- "[System] 检测到生成的图表，正在处理图像数据..."
-						imgData, readErr := os.ReadFile(plotPath)
-						if readErr == nil {
-							task.ImageBase64 = base64.StdEncoding.EncodeToString(imgData)
-							logChannel <- "[System] 图表处理完成"
-						}
+					if imgData, readErr := sandbox.ReadOutputImage(workspacePath); readErr == nil {
+						task.ImageBase64 = base64.StdEncoding.EncodeToString(imgData)
+						sendExecutionLog(ctx, logChannel, "[System] 图表处理完成")
 					}
 				}
 				if err == nil {
-					logChannel <- formatExecuteParamsLog("[Params] 后端产出并传递给下游的参数", buildExecuteOutputs(task))
+					sendExecutionLog(ctx, logChannel, formatExecuteParamsLog("[Params] 后端产出并传递给下游的参数", buildExecuteOutputs(task)))
 				}
 
 				if sb != nil && containerID != "" {
-					logChannel <- "[System] 任务执行完毕，正在清理沙箱环境..."
-					_ = sb.CleanupSandbox(context.Background(), containerID)
-					logChannel <- "[System] 沙箱环境清理完成"
+					sendExecutionLog(ctx, logChannel, "[System] 任务执行完毕，正在清理沙箱环境...")
+					cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+					cleanupErr := sb.CleanupSandbox(cleanupCtx, containerID)
+					cancelCleanup()
+					if cleanupErr != nil {
+						sendExecutionLog(ctx, logChannel, fmt.Sprintf("[Warning] 沙箱清理失败: %v", cleanupErr))
+						if err == nil {
+							err = fmt.Errorf("sandbox cleanup failed: %w", cleanupErr)
+						}
+					} else {
+						_ = os.RemoveAll(workspacePath)
+						sendExecutionLog(ctx, logChannel, "[System] 沙箱环境清理完成")
+					}
+				} else {
+					_ = os.RemoveAll(workspacePath)
 				}
 				done <- err
 			}()
@@ -719,4 +732,13 @@ func stringFieldFromMap(values map[string]any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+// A disconnected SSE client must not prevent task cleanup when the log buffer fills.
+func sendExecutionLog(ctx context.Context, logs chan<- string, message string) {
+	select {
+	case logs <- message:
+	case <-ctx.Done():
+	default:
+	}
 }

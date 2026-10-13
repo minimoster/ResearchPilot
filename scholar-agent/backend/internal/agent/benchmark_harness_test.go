@@ -182,7 +182,7 @@ func TestValidateBenchmarkOutputRejectsMetricPredictionMismatch(t *testing.T) {
 	files := map[string][]byte{
 		"metrics.json":      []byte(`{"accuracy":1}`),
 		"run_manifest.json": runManifest,
-		"predictions.jsonl": []byte("{\"prediction\":\"wrong\",\"target\":\"right\"}\n"),
+		"predictions.jsonl": []byte("{\"index\":0,\"prediction\":\"wrong\",\"target\":\"positive\"}\n"),
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(outputDirectory, name), content, 0o600); err != nil {

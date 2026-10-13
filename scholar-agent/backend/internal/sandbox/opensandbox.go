@@ -44,6 +44,11 @@ type PythonRunResponse struct {
 	Images   []string `json:"images,omitempty"`
 }
 
+// A final event may contain two 8 MiB output streams (JSON escaping can expand
+// each byte sixfold) and an 8 MiB image encoded as base64. Keep a hard limit while
+// allowing the complete bounded server response, including JSON framing.
+const maxExecutionStreamEventBytes = 128 << 20
+
 type executionStreamEvent struct {
 	Type     string             `json:"type"`
 	Stream   string             `json:"stream,omitempty"`
@@ -109,7 +114,10 @@ func (s *SandboxClient) CleanupSandbox(ctx context.Context, sandboxID string) er
 		return err
 	}
 	defer resp.Body.Close()
-
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("sandbox cleanup failed (status %d): %s", resp.StatusCode, body)
+	}
 	return nil
 }
 
@@ -201,7 +209,7 @@ func (s *SandboxClient) streamExecution(ctx context.Context, sandboxID string, s
 
 	scanner := bufio.NewScanner(resp.Body)
 	buffer := make([]byte, 0, 64*1024)
-	scanner.Buffer(buffer, 1024*1024)
+	scanner.Buffer(buffer, maxExecutionStreamEventBytes)
 
 	var finalResponse *PythonRunResponse
 	for scanner.Scan() {

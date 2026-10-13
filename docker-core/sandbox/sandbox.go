@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // ExecResult 单次命令执行的返回结果
@@ -32,7 +33,11 @@ func New(ctx context.Context, cfg Config) (*Sandbox, error) {
 	// 2. 建立 TTY 会话
 	session, err := NewSession(ctx, engine, cfg.AuditLogDir, cfg.ExecTimeout)
 	if err != nil {
-		engine.Destroy(ctx)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if cleanupErr := engine.Destroy(cleanupCtx); cleanupErr != nil {
+			return nil, fmt.Errorf("failed to create sandbox session: %w; cleanup failed: %v", err, cleanupErr)
+		}
 		return nil, fmt.Errorf("failed to create sandbox session: %w", err)
 	}
 
@@ -69,7 +74,9 @@ func (s *Sandbox) Close() error {
 		s.session.Close()
 	}
 	if s.engine != nil {
-		return s.engine.Destroy(context.Background())
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return s.engine.Destroy(cleanupCtx)
 	}
 	return nil
 }
