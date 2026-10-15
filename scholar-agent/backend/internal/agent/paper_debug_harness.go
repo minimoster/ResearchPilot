@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -432,6 +433,13 @@ func applyPaperCodePatches(workspacePath string, proposals []paperCodePatchPropo
 		if err != nil {
 			return nil, err
 		}
+		current, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if string(current) != allowed {
+			return nil, fmt.Errorf("paper source changed since repair context was collected: %s", relative)
+		}
 		validated = append(validated, validatedPatch{proposal: proposal, path: path, relative: relative, original: allowed, mode: info.Mode()})
 	}
 	if len(validated) == 0 {
@@ -535,17 +543,25 @@ func restorePaperCodeBackups(workspacePath string, backups map[string]paperCodeB
 		paths = append(paths, relative)
 	}
 	sort.Strings(paths)
+	var failures []error
 	for _, relative := range paths {
-		_, path, err := paperDebugExistingPythonPath(workspacePath, relative)
+		// A failing run may delete a patched file. Validate containment and all
+		// existing ancestors, but do not require the destination to still exist.
+		path, err := benchmarkPathInWorkspace(workspacePath, relative)
+		clean := filepath.ToSlash(filepath.Clean(relative))
+		if err == nil && (filepath.IsAbs(relative) || strings.HasPrefix(clean, ".git/") || strings.HasPrefix(clean, ".scholar/") || !strings.EqualFold(filepath.Ext(clean), ".py")) {
+			err = fmt.Errorf("invalid paper backup path %q", relative)
+		}
 		if err != nil {
-			return err
+			failures = append(failures, err)
+			continue
 		}
 		backup := backups[relative]
 		if err := writePaperDebugFile(path, backup.Content, backup.Mode); err != nil {
-			return err
+			failures = append(failures, err)
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func writePaperDebugFile(path string, content []byte, mode os.FileMode) error {

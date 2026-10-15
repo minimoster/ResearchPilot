@@ -292,7 +292,18 @@ func (r *planRuntime) streamPlanEvents(c *gin.Context) {
 			writePlanSSE(c, "error", gin.H{"error": err.Error()})
 			return false
 		}
-		for _, event := range history {
+		current, err := r.store.GetPlan(planID)
+		if err != nil {
+			writePlanSSE(c, "error", gin.H{"error": err.Error()})
+			return false
+		}
+		terminalIndex := currentTerminalEventIndex(history, current.Status)
+		for index, event := range history {
+			// Old terminal events must not close a retried plan's stream,
+			// including clients that close themselves when receiving one.
+			if isTerminalPlanEvent(event) && index != terminalIndex {
+				continue
+			}
 			fingerprint := planEventFingerprint(event)
 			if _, duplicate := seen[fingerprint]; duplicate {
 				continue
@@ -317,15 +328,20 @@ func (r *planRuntime) streamPlanEvents(c *gin.Context) {
 			if !ok {
 				return
 			}
+			if isTerminalPlanEvent(event) {
+				// Drain durable history before closing: earlier live events may
+				// have been dropped when the subscriber buffer was full.
+				if !replayUnseen() {
+					return
+				}
+				continue
+			}
 			fingerprint := planEventFingerprint(event)
 			if _, duplicate := seen[fingerprint]; duplicate {
 				continue
 			}
 			seen[fingerprint] = struct{}{}
 			if !writePlanSSE(c, planStreamEventName, event) {
-				return
-			}
-			if isTerminalPlanEvent(event) {
 				return
 			}
 		case <-heartbeat.C:
@@ -363,6 +379,15 @@ func configurePlanGovernance(plan *models.PlanGraph, intent models.IntentContext
 	plan.Budget.MaxDurationSec = positiveEnvInt("PLAN_MAX_DURATION_SECONDS", plan.Budget.MaxDurationSec)
 	requiresApproval := strings.EqualFold(strings.TrimSpace(os.Getenv("REQUIRE_PLAN_APPROVAL")), "true") ||
 		strings.EqualFold(strings.TrimSpace(fmt.Sprint(intent.Constraints["reproduction_mode"])), "full")
+	for _, node := range plan.Nodes {
+		if node == nil || node.Type != "repo_prepare" {
+			continue
+		}
+		fullRequested, _ := node.Inputs["full_reproduction_requested"].(bool)
+		if scheduler.FullReproductionRequested(fmt.Sprint(node.Inputs["requested_reproduction_mode"]), fullRequested) {
+			requiresApproval = true
+		}
+	}
 	plan.Approval.Required = requiresApproval
 	if requiresApproval {
 		plan.Approval.Status = "pending"
@@ -503,4 +528,32 @@ func planEventFingerprint(event models.PlanEvent) string {
 
 func isTerminalPlanEvent(event models.PlanEvent) bool {
 	return event.EventType == "plan_completed" || event.EventType == "plan_failed" || event.EventType == "plan_canceled"
+}
+
+// Only a terminal event from the current run may terminate an SSE subscription.
+func currentTerminalEventIndex(history []models.PlanEvent, status models.TaskStatus) int {
+	var expected string
+	switch status {
+	case models.StatusCompleted:
+		expected = "plan_completed"
+	case models.StatusFailed:
+		expected = "plan_failed"
+	case models.StatusCanceled:
+		expected = "plan_canceled"
+	default:
+		return -1
+	}
+	for index := len(history) - 1; index >= 0; index-- {
+		eventType := history[index].EventType
+		switch eventType {
+		case "plan_started", "task_retry_requested", "task_reassigned":
+			return -1
+		case "plan_completed", "plan_failed", "plan_canceled":
+			if eventType == expected {
+				return index
+			}
+			return -1
+		}
+	}
+	return -1
 }

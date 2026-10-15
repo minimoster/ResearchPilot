@@ -12,7 +12,7 @@
 
 ### 2. 灾难级错误回滚 (Disaster Recovery & Rollback)
 - **环境污染检测**：当某一节点下属的所有实现路径（Implementations）均告失败，或检测到致命错误（如 `glibc` 损坏、核心依赖树崩溃）时，触发回滚协议。
-- **瞬时时空倒流**：直接销毁当前受损的容器实例，并基于上一个成功节点对应的 `imageID` 瞬间拉起全新的沙箱，将环境物理状态 100% 还原至破坏前的安全时刻。
+- **瞬时时空倒流**：先基于上一个成功节点对应的 `imageID` 创建并启动替代容器，再移除当前容器并切换会话；替代容器准备失败时保留原容器。
 
 ### 3. 闭环认知修正 (Cognitive Feedback Injection)
 - **经验教训强制注入**：回滚后，不仅物理环境复原，系统的 `ContextInjector` 会拦截下发给 LLM 的历史对话。
@@ -23,51 +23,46 @@
 ### 集成 Checkpoint 管理器
 
 ```go
-package main
+ctx := context.Background()
 
-import (
-    "context"
-    "fmt"
-    "[github.com/yu-xin-c/Sea-mult-agent/checkpoint](https://github.com/yu-xin-c/Sea-mult-agent/checkpoint)"
-    "[github.com/yu-xin-c/Sea-mult-agent/sandbox](https://github.com/yu-xin-c/Sea-mult-agent/sandbox)"
-)
-
-func main() {
-    ctx := context.Background()
-
-    // 1. 初始化快照管理器 (绑定底层 dockerClient 和 当前运行的容器)
-    cpManager := checkpoint.NewManager(dockerClient, currentContainerID)
-
-    // 2. 模拟 DAG 节点 A 执行成功
-    fmt.Println("Node [install_base] executed successfully.")
-
-    // 生成快照
-    snapshot, err := cpManager.Commit(ctx, "env-node-A")
-    if err != nil {
-        panic(err)
-    }
-    fmt.Printf("已创建安全检查点: %s\n", snapshot.ImageID)
-
-    // 3. 模拟 DAG 节点 B 执行失败且环境被破坏
-    fmt.Println("Node [install_cuda] corrupted the environment!")
-
-    // 4. 触发回滚协议
-    rollbackResult, err := cpManager.Rollback(ctx, snapshot.ImageID)
-    if err != nil {
-        panic(err)
-    }
-
-    // 获取并更新 LLM 的系统提示词
-    negativePrompt := cpManager.GenerateNegativeFeedback("pip install cuda-python")
-    fmt.Println("\n--- 准备发送给 LLM 的修复上下文 ---")
-    fmt.Println(negativePrompt)
-
-    // 输出:
-    // [System Guard]: The previous attempt "pip install cuda-python" caused a fatal system error.
-    // The environment has been rolled back to a safe state.
-    // DO NOT attempt this path again. Please provide an alternative installation strategy.
+sb, err := sandbox.New(ctx, sandbox.DefaultConfig())
+if err != nil {
+    return err
 }
+// Close removes the container and then all images owned by its managers.
+// Handle its error; failed cleanup can be retried with Close.
+defer func() {
+    if err := sb.Close(); err != nil {
+        log.Printf("sandbox cleanup failed: %v", err)
+    }
+}()
+
+cp := checkpoint.NewManager(sb)
+imageID, err := cp.Commit(ctx, "install-base")
+if err != nil {
+    return err
+}
+
+// A failed replacement create/start preserves the existing container.
+if err := cp.Rollback(ctx, imageID); err != nil {
+    return err
+}
+feedback := cp.RecordFailureAndGetFeedback("install-cuda", "pip install cuda-python", "install failed")
+fmt.Println(feedback)
 ```
+
+### Snapshot ownership and cleanup
+
+- A manager owns only image IDs returned by its successful `Commit` calls. Manually adding a registry entry does not transfer ownership.
+- Recommitting a node or rolling the registry back does not discard ownership of older images. They remain available for cleanup at the end of the sandbox lifecycle.
+- `Sandbox.Close()` first removes its containers, then calls manager cleanup hooks, then closes the Docker client. Every hook is attempted even if another hook fails, and errors are combined.
+- `Manager.Cleanup(ctx)` is also available explicitly. It removes owned snapshots newest-first, never uses forced image deletion, and disables parent-image pruning. In-use images remain owned and produce an error; stop their containers and retry. Successful removals (including images already missing) also remove the corresponding registry entries.
+- Cleanup is retryable: successfully removed images are not deleted again. Failed removals retain their ownership records. No automatic background garbage collection or crash-persistent image inventory is provided.
+- Close deletes snapshots as part of releasing sandbox resources. Export any image that must outlive this sandbox into separately managed storage before closing.
+- Manager commit, rollback, and cleanup calls are serialized. Callers must stop command execution and lifecycle changes before closing the sandbox; concurrent sandbox execution/close is not supported.
+
+The imports used above are `context`, `fmt`, `log`, and the `checkpoint` and `sandbox` packages under `github.com/yu-xin-c/Sea-mult-agent/docker-core`. The excerpt belongs in a function returning `error`.
+
 
 ## 🏗 架构组件
 Manager: 协调 Docker Client 的 Commit 与重置逻辑，管理当前运行容器的生命周期。

@@ -93,6 +93,15 @@ func resolvePublicIPs(ctx context.Context, hostname string) ([]net.IP, error) {
 }
 
 func blockedRemoteIP(ip net.IP) bool {
-	return ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		// IsPrivate covers RFC 1918 only. Shared carrier networks, local
+		// "this network" addresses, benchmarks and reserved ranges are not
+		// safe destinations for a server-side public-document proxy.
+		return v4[0] == 0 || (v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127) ||
+			(v4[0] == 198 && (v4[1] == 18 || v4[1] == 19)) || v4[0] >= 240
+	}
+	return false
 }

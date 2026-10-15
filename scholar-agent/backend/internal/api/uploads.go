@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -184,10 +185,7 @@ func resolvePlanUploads(ownerID string, uploadIDs []string) ([]map[string]any, e
 			"storage_path": metadata.StoredPath,
 		}
 		if isTextUpload(filepath.Ext(metadata.Name)) {
-			if raw, readErr := os.ReadFile(metadata.StoredPath); readErr == nil {
-				if len(raw) > uploadTextExcerptLimit {
-					raw = raw[:uploadTextExcerptLimit]
-				}
+			if raw, readErr := readUploadExcerpt(metadata.StoredPath); readErr == nil {
 				item["text_excerpt"] = string(raw)
 			}
 		}
@@ -259,7 +257,13 @@ func sanitizeUploadName(name string) string {
 	}
 	if len(name) > 180 {
 		ext := filepath.Ext(name)
-		name = strings.TrimSuffix(name, ext)[:160] + ext
+		// Keep normal extensions intact, but never slice a short stem using
+		// a fixed offset (a long untrusted extension can otherwise panic).
+		if len(ext) < 180 {
+			name = truncateUploadName(strings.TrimSuffix(name, ext), 180-len(ext)) + ext
+		} else {
+			name = truncateUploadName(name, 180)
+		}
 	}
 	return name
 }
@@ -293,4 +297,23 @@ func normalizedUploadContentType(extension, detected string) string {
 
 func isTextUpload(extension string) bool {
 	return strings.ToLower(extension) != ".pdf"
+}
+
+func truncateUploadName(name string, limit int) string {
+	if len(name) <= limit {
+		return name
+	}
+	for limit > 0 && !utf8.RuneStart(name[limit]) {
+		limit--
+	}
+	return name[:limit]
+}
+
+func readUploadExcerpt(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(io.LimitReader(file, uploadTextExcerptLimit))
 }

@@ -2,15 +2,23 @@ package checkpoint
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/client"
 
 	"github.com/yu-xin-c/Sea-mult-agent/docker-core/sandbox"
 )
+
+var checkpointSequence atomic.Uint64
 
 var dockerRefSanitizer = regexp.MustCompile(`[^a-z0-9._-]+`)
 
@@ -25,30 +33,44 @@ type RollbackResult struct {
 // Manager checkpoint 核心管理器
 // 协调 Docker Commit / 容器重建 / 负反馈注入
 type Manager struct {
-	sandbox  *sandbox.Sandbox
-	registry *SnapshotRegistry
-	injector *FeedbackInjector
+	sandbox     *sandbox.Sandbox
+	registry    *SnapshotRegistry
+	injector    *FeedbackInjector
+	mu          sync.Mutex // Serializes Commit, Rollback and owned-image cleanup.
+	cli         *client.Client
+	ownedImages map[string]uint64
 }
 
 // NewManager 创建 checkpoint 管理器，绑定到指定沙箱
 func NewManager(sb *sandbox.Sandbox) *Manager {
-	return &Manager{
-		sandbox:  sb,
-		registry: NewSnapshotRegistry(),
-		injector: NewFeedbackInjector(),
+	m := &Manager{
+		sandbox:     sb,
+		registry:    NewSnapshotRegistry(),
+		injector:    NewFeedbackInjector(),
+		ownedImages: make(map[string]uint64),
 	}
+	if sb != nil && sb.Engine() != nil {
+		m.cli = sb.Engine().Client()
+		sb.AddCleanup(m.Cleanup)
+	}
+	return m
 }
 
 // Commit 为当前容器状态创建快照
 // 对齐 executor.CheckpointManager 接口，返回 ImageID
 func (m *Manager) Commit(ctx context.Context, nodeID string) (string, error) {
+	if m == nil || m.sandbox == nil || m.sandbox.Engine() == nil {
+		return "", fmt.Errorf("no sandbox available to commit")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	engine := m.sandbox.Engine()
 	containerID := engine.ContainerID()
 	if containerID == "" {
 		return "", fmt.Errorf("no active container to commit")
 	}
 
-	ref := fmt.Sprintf("checkpoint-%s-%d", sanitizeDockerRefComponent(nodeID), time.Now().Unix())
+	ref := fmt.Sprintf("checkpoint-%s-%d-%d", sanitizeDockerRefComponent(nodeID), time.Now().UnixNano(), checkpointSequence.Add(1))
 
 	// Docker Commit：将当前容器文件系统 + 环境状态打包为新镜像
 	resp, err := engine.Client().ContainerCommit(ctx, containerID,
@@ -61,15 +83,25 @@ func (m *Manager) Commit(ctx context.Context, nodeID string) (string, error) {
 		return "", fmt.Errorf("docker commit failed for node %s: %w", nodeID, err)
 	}
 
+	if strings.TrimSpace(resp.ID) == "" {
+		return "", fmt.Errorf("docker commit returned an empty image ID for node %s", nodeID)
+	}
+	m.recordSnapshot(nodeID, resp.ID, ref)
+
+	return resp.ID, nil
+}
+
+// recordSnapshot is called only for an image returned by this manager's Commit.
+// Registry edits alone never establish image ownership. Caller holds m.mu.
+func (m *Manager) recordSnapshot(nodeID, imageID, ref string) {
+	m.ownedImages[imageID] = checkpointSequence.Add(1)
 	snap := Snapshot{
 		NodeID:    nodeID,
-		ImageID:   resp.ID,
+		ImageID:   imageID,
 		CreatedAt: time.Now().Unix(),
 		Comment:   ref,
 	}
 	m.registry.Register(snap)
-
-	return resp.ID, nil
 }
 
 func sanitizeDockerRefComponent(raw string) string {
@@ -85,6 +117,11 @@ func sanitizeDockerRefComponent(raw string) string {
 // Rollback 基于指定镜像 ID 执行回滚
 // 对齐 executor.CheckpointManager 接口
 func (m *Manager) Rollback(ctx context.Context, imageID string) error {
+	if m == nil || m.sandbox == nil || m.sandbox.Engine() == nil {
+		return fmt.Errorf("no sandbox available to roll back")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	engine := m.sandbox.Engine()
 
 	// 基于快照镜像重启容器
@@ -153,4 +190,40 @@ func (m *Manager) Registry() *SnapshotRegistry {
 // Injector 暴露负反馈生成器
 func (m *Manager) Injector() *FeedbackInjector {
 	return m.injector
+}
+
+// Cleanup removes only images created by this manager, including overwritten
+// and rolled-back snapshots. It never forces removal of images still in use.
+// Successful removals leave the registry; failures retain ownership for retry.
+// Sandbox.Close calls this after removing its containers. Explicit callers
+// should likewise stop containers using the snapshots before cleanup.
+func (m *Manager) Cleanup(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.ownedImages) == 0 {
+		return nil
+	}
+	if m.cli == nil {
+		return fmt.Errorf("no Docker client available for checkpoint cleanup")
+	}
+	ids := make([]string, 0, len(m.ownedImages))
+	for id := range m.ownedImages {
+		ids = append(ids, id)
+	}
+	// Child snapshots are newer than their parent images. Remove them first.
+	sort.Slice(ids, func(i, j int) bool { return m.ownedImages[ids[i]] > m.ownedImages[ids[j]] })
+	var errs []error
+	for _, id := range ids {
+		_, err := m.cli.ImageRemove(ctx, id, image.RemoveOptions{Force: false, PruneChildren: false})
+		if err != nil && !client.IsErrNotFound(err) {
+			errs = append(errs, fmt.Errorf("failed to remove checkpoint image %s: %w", id, err))
+			continue
+		}
+		delete(m.ownedImages, id)
+		m.registry.removeImage(id)
+	}
+	return errors.Join(errs...)
 }

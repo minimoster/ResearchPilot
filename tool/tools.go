@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -53,9 +54,10 @@ func (r *Registry) Definitions() []ToolDefinition {
 }
 
 func (r *Registry) DefinitionsJSON() string {
-    bs, _ := json.MarshalIndent(r.Definitions(), "", "  ")
-    return string(bs)
+	bs, _ := json.MarshalIndent(r.Definitions(), "", "  ")
+	return string(bs)
 }
+
 // Executor
 
 type Executor struct {
@@ -80,6 +82,7 @@ func (e *Executor) Execute(ctx context.Context, name string, input json.RawMessa
 
 	return tool.Execute(ctx, input)
 }
+
 //
 
 //  SearchTool
@@ -92,7 +95,7 @@ type SearchInput struct {
 
 func (s SearchTool) Definition() ToolDefinition {
 	return ToolDefinition{
-		Name: "search_web",
+		Name:        "search_web",
 		Description: "用于查询互联网资料、技术文档、概念解释等。当你需要获取外部信息时使用",
 		Parameters: map[string]interface{}{
 			"type": "object",
@@ -109,8 +112,10 @@ func (s SearchTool) Definition() ToolDefinition {
 
 func (s SearchTool) Execute(ctx context.Context, input json.RawMessage) (ToolResponse, error) {
 	var req SearchInput
-	json.Unmarshal(input, &req)
-
+	if err := json.Unmarshal(input, &req); err != nil {
+		return ToolResponse{}, fmt.Errorf("invalid tool arguments: %w", err)
+	}
+	req.Query = strings.TrimSpace(req.Query)
 	if req.Query == "" {
 		return ToolResponse{}, fmt.Errorf("query empty")
 	}
@@ -132,7 +137,7 @@ type DeepResearchTool struct{}
 
 func (d DeepResearchTool) Definition() ToolDefinition {
 	return ToolDefinition{
-		Name: "deep_research",
+		Name:        "deep_research",
 		Description: "用于复杂问题、深入分析、多角度研究。比普通搜索更深入",
 		Parameters: map[string]interface{}{
 			"type": "object",
@@ -149,7 +154,13 @@ func (d DeepResearchTool) Definition() ToolDefinition {
 func (d DeepResearchTool) Execute(ctx context.Context, input json.RawMessage) (ToolResponse, error) {
 
 	var req SearchInput
-	json.Unmarshal(input, &req)
+	if err := json.Unmarshal(input, &req); err != nil {
+		return ToolResponse{}, fmt.Errorf("invalid tool arguments: %w", err)
+	}
+	req.Query = strings.TrimSpace(req.Query)
+	if req.Query == "" {
+		return ToolResponse{}, fmt.Errorf("query empty")
+	}
 
 	// 模拟多轮搜索 + 融合
 	res1 := tavilyMock(req.Query + " 原理")
@@ -169,7 +180,7 @@ type AIAnswerTool struct{}
 
 func (a AIAnswerTool) Definition() ToolDefinition {
 	return ToolDefinition{
-		Name: "ai_answer",
+		Name:        "ai_answer",
 		Description: "直接返回AI生成的答案，适合不需要原始资料，只要结论的场景",
 		Parameters: map[string]interface{}{
 			"type": "object",
@@ -186,7 +197,13 @@ func (a AIAnswerTool) Definition() ToolDefinition {
 func (a AIAnswerTool) Execute(ctx context.Context, input json.RawMessage) (ToolResponse, error) {
 
 	var req SearchInput
-	json.Unmarshal(input, &req)
+	if err := json.Unmarshal(input, &req); err != nil {
+		return ToolResponse{}, fmt.Errorf("invalid tool arguments: %w", err)
+	}
+	req.Query = strings.TrimSpace(req.Query)
+	if req.Query == "" {
+		return ToolResponse{}, fmt.Errorf("query empty")
+	}
 
 	// 👉 这里可以接 Perplexity API
 	mock := fmt.Sprintf("【AI总结】关于 %s 的直接结论：这是一个容错机制...", req.Query)

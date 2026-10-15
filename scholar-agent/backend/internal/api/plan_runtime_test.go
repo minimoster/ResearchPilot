@@ -283,3 +283,58 @@ func TestPlanRuntimeRoutesUploadedDatasetToCustomBenchmarkHarness(t *testing.T) 
 		t.Fatalf("benchmark dataset excerpt leaked into plan response: %#v", uploadedFiles[0])
 	}
 }
+
+func TestPlanStreamReplaysLatestRunPastHistoricalTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	planStore := store.NewMemoryPlanStore()
+	eventBus := events.NewBus()
+	plan := &models.PlanGraph{ID: "retried-stream-plan", Status: models.StatusCompleted}
+	if err := planStore.SavePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	for i, eventType := range []string{"plan_started", "plan_failed", "task_retry_requested", "plan_started", "task_completed", "plan_completed"} {
+		if err := planStore.AppendEvent(plan.ID, models.PlanEvent{PlanID: plan.ID, EventType: eventType, Timestamp: time.Unix(int64(i), 0)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime := newPlanRuntime(nil, planStore, nil, eventBus)
+	router := gin.New()
+	runtime.register(router.Group("/api"))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/plans/"+plan.ID+"/stream", nil))
+	body := response.Body.String()
+	if !strings.Contains(body, `"event_type":"plan_completed"`) || !strings.Contains(body, `"event_type":"task_retry_requested"`) {
+		t.Fatalf("stream stopped at a previous run's terminal event: %s", body)
+	}
+	if strings.Contains(body, `"event_type":"plan_failed"`) {
+		t.Fatalf("obsolete terminal event would make clients close the retried stream: %s", body)
+	}
+}
+
+func TestPlanGovernanceRequiresApprovalForExecutableFullMode(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("REQUIRE_PLAN_APPROVAL", "false")
+	for _, test := range []struct {
+		name, intent, configuredMode string
+		wantApproval                 bool
+	}{
+		{"explicit full", "请完整复现论文 Attention Is All You Need", "", true},
+		{"explicit smoke", "请复现论文 Attention Is All You Need，采用 smoke", "", false},
+		{"configured full", "请复现论文 Attention Is All You Need，采用 smoke", "full", true},
+		{"configured full alias", "请复现论文 Attention Is All You Need，采用 smoke", "complete", true},
+		{"configured smoke", "请完整复现论文 Attention Is All You Need", "smoke", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("PAPER_REPRO_MODE", test.configuredMode)
+			intent := buildRuleIntentContext(test.intent)
+			plan, err := planner.NewPlanner().BuildPlan(context.Background(), intent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			configurePlanGovernance(plan, intent, "owner", "session")
+			if plan.Approval.Required != test.wantApproval {
+				t.Fatalf("approval=%v want=%v intent=%#v", plan.Approval.Required, test.wantApproval, intent)
+			}
+		})
+	}
+}

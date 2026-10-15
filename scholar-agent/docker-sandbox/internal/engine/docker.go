@@ -5,11 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -19,8 +19,9 @@ import (
 var containerIDPattern = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
 
 type NativeDockerEngine struct {
-	mu         sync.RWMutex
-	mountPaths map[string]string // 记录容器 ID 到宿主机挂载路径的映射
+	mu            sync.RWMutex
+	mountPaths    map[string]string
+	inspectLabels func(context.Context, string) (map[string]string, error)
 }
 
 type streamChunk struct {
@@ -39,7 +40,8 @@ type DockerHealth struct {
 
 func NewNativeDockerEngine() *NativeDockerEngine {
 	return &NativeDockerEngine{
-		mountPaths: make(map[string]string),
+		mountPaths:    make(map[string]string),
+		inspectLabels: inspectDockerLabels,
 	}
 }
 
@@ -103,10 +105,6 @@ func dockerCommand() string {
 	return "docker"
 }
 
-func (e *NativeDockerEngine) GetType() string {
-	return "Docker"
-}
-
 func (e *NativeDockerEngine) Create(ctx context.Context, image string, mountPath string) (string, error) {
 	args, err := secureDockerRunArgs(image)
 	if err != nil {
@@ -120,31 +118,243 @@ func (e *NativeDockerEngine) Create(ctx context.Context, image string, mountPath
 		if err != nil {
 			return "", err
 		}
+		mountPath = normalizedMountPath
 		args = append(args, "-v", fmt.Sprintf("%s:/workspace", normalizedMountPath))
 	}
 	args = append(args, image, "sleep", "infinity")
-	fmt.Printf("[NativeDocker] Executing: docker %s\n", strings.Join(args, " "))
+
 	cmd := exec.CommandContext(ctx, dockerCommand(), args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("Docker run failed: %v, output: %s", err, string(output))
+		return "", fmt.Errorf("docker run failed: %v, output: %s", err, string(output))
 	}
+
 	containerID := extractContainerIDFromDockerRunOutput(string(output))
 	if containerID == "" {
-		return "", fmt.Errorf("Docker run returned empty container id, output: %s", string(output))
+		return "", fmt.Errorf("docker run returned empty container id, output: %s", string(output))
 	}
-	if mountPath != "" {
-		e.mu.Lock()
-		e.mountPaths[containerID] = mountPath
-		e.mu.Unlock()
-	}
+	e.mu.Lock()
+	e.mountPaths[containerID] = mountPath
+	e.mu.Unlock()
 	return containerID, nil
 }
 
+// validateSandboxID prevents API-supplied values from becoming Docker CLI options.
+// Ownership authorization additionally requires the persistent managed label below.
+func validateSandboxID(id string) error {
+	if !containerIDPattern.MatchString(id) {
+		return fmt.Errorf("invalid sandbox id %q", id)
+	}
+	return nil
+}
+
+// managedSandboxLabel is shared by the standalone and embedded sandbox services.
+// Containers created before this label was introduced must be recreated; they
+// are deliberately not adopted automatically during an upgrade.
+const managedSandboxLabel = "org.openresearch.sandbox.managed"
+
+func inspectDockerLabels(ctx context.Context, id string) (map[string]string, error) {
+	inspectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(inspectCtx, dockerCommand(), "inspect", "--type", "container", "--format", "{{json .Config.Labels}}", id).Output()
+	if err != nil {
+		return nil, fmt.Errorf("inspect sandbox ownership: %w", err)
+	}
+	var labels map[string]string
+	if err := json.Unmarshal(output, &labels); err != nil {
+		return nil, fmt.Errorf("decode sandbox labels: %w", err)
+	}
+	return labels, nil
+}
+
+func (e *NativeDockerEngine) requireManagedSandbox(ctx context.Context, id string) error {
+	if err := validateSandboxID(id); err != nil {
+		return err
+	}
+	inspect := e.inspectLabels
+	if inspect == nil {
+		inspect = inspectDockerLabels
+	}
+	labels, err := inspect(ctx, id)
+	if err != nil {
+		return err
+	}
+	if labels[managedSandboxLabel] != "true" {
+		return fmt.Errorf("container %s is not managed by this sandbox service; recreate legacy unlabeled sandboxes", id)
+	}
+	return nil
+}
+
+func (e *NativeDockerEngine) Delete(ctx context.Context, id string) error {
+	if err := e.requireManagedSandbox(ctx, id); err != nil {
+		return err
+	}
+	if err := exec.CommandContext(ctx, dockerCommand(), "rm", "-f", id).Run(); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	delete(e.mountPaths, id)
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *NativeDockerEngine) ExecutePython(ctx context.Context, id string, code string) (*ExecutionResponse, error) {
+	if err := e.requireManagedSandbox(ctx, id); err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, dockerCommand(), "exec", id, "python3", "-c", code)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	exitCode := resolveExitCode(err)
+	response := &ExecutionResponse{
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		ExitCode: exitCode,
+	}
+
+	// 兼容已有逻辑：如果代码把图像保存到挂载目录，就顺手带回前端展示。
+	e.attachOutputImage(id, response)
+	return response, nil
+}
+
+func (e *NativeDockerEngine) ExecutePythonStream(ctx context.Context, id string, code string, emit func(ExecutionStreamEvent) error) (*ExecutionResponse, error) {
+	if err := e.requireManagedSandbox(ctx, id); err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, dockerCommand(), "exec", id, "python3", "-c", code)
+	response, err := e.runStreamingCommand(cmd, emit)
+	if err != nil {
+		return nil, err
+	}
+	e.attachOutputImage(id, response)
+	if emit == nil {
+		return response, nil
+	}
+	return response, emit(ExecutionStreamEvent{
+		Type:     "final",
+		Response: response,
+	})
+}
+
+func (e *NativeDockerEngine) ExecuteCommand(ctx context.Context, id string, cmdArr []string) (*ExecutionResponse, error) {
+	if err := e.requireManagedSandbox(ctx, id); err != nil {
+		return nil, err
+	}
+	args := append([]string{"exec", id}, cmdArr...)
+	cmd := exec.CommandContext(ctx, dockerCommand(), args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	return &ExecutionResponse{
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		ExitCode: resolveExitCode(err),
+	}, nil
+}
+
+func (e *NativeDockerEngine) ExecuteCommandStream(ctx context.Context, id string, cmdArr []string, emit func(ExecutionStreamEvent) error) (*ExecutionResponse, error) {
+	if err := e.requireManagedSandbox(ctx, id); err != nil {
+		return nil, err
+	}
+	args := append([]string{"exec", id}, cmdArr...)
+	cmd := exec.CommandContext(ctx, dockerCommand(), args...)
+	response, err := e.runStreamingCommand(cmd, emit)
+	if err != nil {
+		return nil, err
+	}
+	if emit == nil {
+		return response, nil
+	}
+	return response, emit(ExecutionStreamEvent{
+		Type:     "final",
+		Response: response,
+	})
+}
+
+func (e *NativeDockerEngine) attachOutputImage(id string, response *ExecutionResponse) {
+	e.mu.RLock()
+	mountPath, ok := e.mountPaths[id]
+	e.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	imgData, err := ReadOutputImage(mountPath)
+	if err != nil {
+		return
+	}
+	response.Images = []string{base64.StdEncoding.EncodeToString(imgData)}
+}
+
+func (e *NativeDockerEngine) runStreamingCommand(cmd *exec.Cmd, emit func(ExecutionStreamEvent) error) (*ExecutionResponse, error) {
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	defer stdoutPipe.Close()
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	defer stderrPipe.Close()
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	chunks := make(chan streamChunk, 64)
+	done := make(chan struct{})
+	readErrors := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); readErrors <- readPipeLines(stdoutPipe, "stdout", &stdoutBuf, chunks, done) }()
+	go func() { defer wg.Done(); readErrors <- readPipeLines(stderrPipe, "stderr", &stderrBuf, chunks, done) }()
+	go func() { wg.Wait(); close(chunks) }()
+
+	// Always reap the CLI and unblock readers, even when the HTTP writer fails.
+	// Killing this CLI alone does not stop a Docker daemon-side exec process.
+	waited := false
+	defer func() {
+		close(done)
+		if !waited {
+			_ = cmd.Process.Kill()
+			_ = stdoutPipe.Close()
+			_ = stderrPipe.Close()
+			_ = cmd.Wait()
+		}
+		wg.Wait()
+	}()
+	readersDone := 0
+	for chunks != nil || readersDone < 2 {
+		select {
+		case readErr := <-readErrors:
+			readersDone++
+			if readErr != nil {
+				return nil, fmt.Errorf("read command output: %w", readErr)
+			}
+		case chunk, ok := <-chunks:
+			if !ok {
+				chunks = nil
+				continue
+			}
+			if emit != nil {
+				if err := emit(ExecutionStreamEvent{Type: "chunk", Stream: chunk.stream, Message: chunk.line}); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	waitErr := cmd.Wait()
+	waited = true
+	return &ExecutionResponse{Stdout: stdoutBuf.String(), Stderr: stderrBuf.String(), ExitCode: resolveExitCode(waitErr)}, nil
+}
+
 func extractContainerIDFromDockerRunOutput(raw string) string {
-	// `docker run -d` may print image pull progress before the final container id
-	// when the image is not present locally. We scan from the last line upward and
-	// validate the candidate against the expected hex container-id pattern.
 	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
@@ -165,185 +375,33 @@ func normalizeDockerMountPath(mountPath string) (string, error) {
 	return normalizeAndAuthorizeMountPath(mountPath)
 }
 
-func (e *NativeDockerEngine) Delete(ctx context.Context, id string) error {
-	e.mu.Lock()
-	delete(e.mountPaths, id)
-	e.mu.Unlock()
-	return exec.CommandContext(ctx, dockerCommand(), "rm", "-f", id).Run()
+func resolveExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	if exitError, ok := err.(*exec.ExitError); ok {
+		return exitError.ExitCode()
+	}
+	return -1
 }
 
-func (e *NativeDockerEngine) ExecutePython(ctx context.Context, id string, code string) (*ExecutionResponse, error) {
-	cmd := exec.CommandContext(ctx, dockerCommand(), "exec", id, "python3", "-c", code)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-
-	exitCode := 0
-	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-
-	response := &ExecutionResponse{
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		ExitCode: exitCode,
-	}
-
-	// 尝试从挂载目录读取生成的图表 (Matplotlib 默认保存路径)
-	e.mu.RLock()
-	mountPath, ok := e.mountPaths[id]
-	e.mu.RUnlock()
-	if ok {
-		plotPath := filepath.Join(mountPath, "output_plot.png")
-		if _, err := os.Stat(plotPath); err == nil {
-			imgData, readErr := os.ReadFile(plotPath)
-			if readErr == nil {
-				response.Images = []string{base64.StdEncoding.EncodeToString(imgData)}
-				// 读取后删除，避免下一次执行干扰
-				os.Remove(plotPath)
-			}
-		}
-	}
-
-	return response, nil
-}
-
-func (e *NativeDockerEngine) ExecutePythonStream(ctx context.Context, id string, code string, emit func(ExecutionStreamEvent) error) (*ExecutionResponse, error) {
-	cmd := exec.CommandContext(ctx, dockerCommand(), "exec", id, "python3", "-c", code)
-	response, err := e.runStreamingCommand(ctx, cmd, emit)
-	if err != nil {
-		return nil, err
-	}
-
-	e.mu.RLock()
-	mountPath, ok := e.mountPaths[id]
-	e.mu.RUnlock()
-	if ok {
-		plotPath := filepath.Join(mountPath, "output_plot.png")
-		if _, statErr := os.Stat(plotPath); statErr == nil {
-			imgData, readErr := os.ReadFile(plotPath)
-			if readErr == nil {
-				response.Images = []string{base64.StdEncoding.EncodeToString(imgData)}
-				os.Remove(plotPath)
-			}
-		}
-	}
-
-	return response, emit(ExecutionStreamEvent{
-		Type:     "final",
-		Response: response,
-	})
-}
-
-func (e *NativeDockerEngine) ExecuteCommand(ctx context.Context, id string, cmdArr []string) (*ExecutionResponse, error) {
-	args := append([]string{"exec", id}, cmdArr...)
-	fmt.Printf("[NativeDocker] Executing: docker %s\n", strings.Join(args, " "))
-	dockerCmd := exec.CommandContext(ctx, dockerCommand(), args...)
-	var stdout, stderr bytes.Buffer
-	dockerCmd.Stdout = &stdout
-	dockerCmd.Stderr = &stderr
-	err := dockerCmd.Run()
-
-	exitCode := 0
-	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-
-	return &ExecutionResponse{
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		ExitCode: exitCode,
-	}, nil
-}
-
-func (e *NativeDockerEngine) ExecuteCommandStream(ctx context.Context, id string, cmdArr []string, emit func(ExecutionStreamEvent) error) (*ExecutionResponse, error) {
-	args := append([]string{"exec", id}, cmdArr...)
-	fmt.Printf("[NativeDocker] Executing: docker %s\n", strings.Join(args, " "))
-	dockerCmd := exec.CommandContext(ctx, dockerCommand(), args...)
-	response, err := e.runStreamingCommand(ctx, dockerCmd, emit)
-	if err != nil {
-		return nil, err
-	}
-	return response, emit(ExecutionStreamEvent{
-		Type:     "final",
-		Response: response,
-	})
-}
-
-func (e *NativeDockerEngine) runStreamingCommand(ctx context.Context, cmd *exec.Cmd, emit func(ExecutionStreamEvent) error) (*ExecutionResponse, error) {
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	var stdoutBuf, stderrBuf bytes.Buffer
-	chunks := make(chan streamChunk, 64)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		readPipeLines(stdoutPipe, "stdout", &stdoutBuf, chunks)
-	}()
-	go func() {
-		defer wg.Done()
-		readPipeLines(stderrPipe, "stderr", &stderrBuf, chunks)
-	}()
-	go func() {
-		wg.Wait()
-		close(chunks)
-	}()
-
-	for chunk := range chunks {
-		if emitErr := emit(ExecutionStreamEvent{
-			Type:    "chunk",
-			Stream:  chunk.stream,
-			Message: chunk.line,
-		}); emitErr != nil {
-			return nil, emitErr
-		}
-	}
-
-	waitErr := cmd.Wait()
-	exitCode := 0
-	if waitErr != nil {
-		if exitError, ok := waitErr.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-
-	return &ExecutionResponse{
-		Stdout:   stdoutBuf.String(),
-		Stderr:   stderrBuf.String(),
-		ExitCode: exitCode,
-	}, nil
-}
-
-func readPipeLines(reader io.Reader, stream string, sink *bytes.Buffer, out chan<- streamChunk) {
+func readPipeLines(reader io.Reader, stream string, sink *bytes.Buffer, out chan<- streamChunk, done <-chan struct{}) error {
 	scanner := bufio.NewScanner(reader)
-	buffer := make([]byte, 0, 64*1024)
-	scanner.Buffer(buffer, 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
+		if sink.Len()+len(line)+1 > 8<<20 {
+			return fmt.Errorf("command output exceeds 8 MiB limit")
+		}
 		sink.WriteString(line)
 		sink.WriteByte('\n')
-		out <- streamChunk{stream: stream, line: line}
+		select {
+		case out <- streamChunk{stream: stream, line: line}:
+		case <-done:
+			return nil
+		}
 	}
+	return scanner.Err()
 }
+
+func (e *NativeDockerEngine) GetType() string { return "Docker" }

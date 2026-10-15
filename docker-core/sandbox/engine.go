@@ -2,18 +2,32 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
-// Engine 管理 Docker 容器的生命周期
+// Engine 管理 Docker 容器的生命周期。Callers must serialize lifecycle operations.
 type Engine struct {
 	cli         *client.Client
 	containerID string
 	config      Config
+	// Failed replacement cleanup is retried by Destroy.
+	pendingContainers []string
 }
+
+// containerCleanupError retains a created container that could not be removed.
+// RestartFrom keeps it in its lifecycle so Destroy can retry cleanup.
+type containerCleanupError struct {
+	containerID string
+	err         error
+}
+
+func (e *containerCleanupError) Error() string { return e.err.Error() }
+func (e *containerCleanupError) Unwrap() error { return e.err }
 
 // NewEngine 创建 Docker Client 并拉起容器
 func NewEngine(ctx context.Context, cfg Config) (*Engine, error) {
@@ -81,7 +95,14 @@ func createContainer(ctx context.Context, cli *client.Client, cfg Config) (*Engi
 
 	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		// 启动失败则清理已创建的容器
-		cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if cleanupErr := cli.ContainerRemove(cleanupCtx, resp.ID, container.RemoveOptions{Force: true}); cleanupErr != nil && !client.IsErrNotFound(cleanupErr) {
+			return nil, &containerCleanupError{containerID: resp.ID, err: errors.Join(
+				fmt.Errorf("failed to start container: %w", err),
+				fmt.Errorf("failed to clean up container %s: %w", resp.ID, cleanupErr),
+			)}
+		}
 		return nil, fmt.Errorf("failed to start container: %w", err)
 	}
 
@@ -113,18 +134,41 @@ func (e *Engine) removeContainer(ctx context.Context) error {
 		return nil
 	}
 	err := e.cli.ContainerRemove(ctx, e.containerID, container.RemoveOptions{Force: true})
-	if err != nil {
+	if err != nil && !client.IsErrNotFound(err) {
 		return fmt.Errorf("failed to remove container %s: %w", e.containerID, err)
 	}
 	e.containerID = ""
 	return nil
 }
 
+// removeContainers leaves the Docker client available for dependent cleanup.
+func (e *Engine) removeContainers(ctx context.Context) error {
+	var cleanupErrors []error
+	if err := e.removeContainer(ctx); err != nil {
+		cleanupErrors = append(cleanupErrors, err)
+	}
+	remaining := e.pendingContainers[:0]
+	for _, id := range e.pendingContainers {
+		err := e.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true})
+		if err != nil && !client.IsErrNotFound(err) {
+			remaining = append(remaining, id)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("failed to remove replacement container %s: %w", id, err))
+		}
+	}
+	e.pendingContainers = remaining
+	return errors.Join(cleanupErrors...)
+}
+
 // Destroy 强制销毁容器并关闭 Docker 客户端，释放所有资源
 func (e *Engine) Destroy(ctx context.Context) error {
-	if err := e.removeContainer(ctx); err != nil {
-		return err
+	cleanupErr := e.removeContainers(ctx)
+	if e.cli != nil {
+		return errors.Join(cleanupErr, e.cli.Close())
 	}
+	return cleanupErr
+}
+
+func (e *Engine) closeClient() error {
 	if e.cli != nil {
 		return e.cli.Close()
 	}
@@ -132,20 +176,30 @@ func (e *Engine) Destroy(ctx context.Context) error {
 }
 
 // RestartFrom 基于指定镜像重建容器（checkpoint 回滚时调用）
-// 销毁当前容器 → 用新镜像创建新容器 → 更新 containerID 和 config
+// Prepare and start the replacement before removing the current container.
 func (e *Engine) RestartFrom(ctx context.Context, imageID string) (string, error) {
-	// 仅移除容器，保留 Docker 客户端供后续使用
-	if err := e.removeContainer(ctx); err != nil {
-		return "", fmt.Errorf("failed to destroy old container during restart: %w", err)
-	}
-
 	// 用快照镜像重建，复用原有配置
 	newCfg := e.config
 	newCfg.Image = imageID
 
 	newEngine, err := newEngineWithClient(ctx, e.cli, newCfg)
 	if err != nil {
+		var cleanupErr *containerCleanupError
+		if errors.As(err, &cleanupErr) {
+			e.pendingContainers = append(e.pendingContainers, cleanupErr.containerID)
+		}
 		return "", fmt.Errorf("failed to restart from image %s: %w", imageID, err)
+	}
+
+	// Keep the original container/config intact if preparation or removal fails.
+	if err := e.removeContainer(ctx); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cleanupErr := newEngine.removeContainer(cleanupCtx)
+		if cleanupErr != nil {
+			e.pendingContainers = append(e.pendingContainers, newEngine.containerID)
+		}
+		return "", errors.Join(fmt.Errorf("failed to destroy old container during restart: %w", err), cleanupErr)
 	}
 
 	e.containerID = newEngine.containerID

@@ -65,7 +65,7 @@ export function ChatMessageList(props: ChatMessageListProps) {
                     className="flex items-center gap-1 text-xs bg-white text-purple-600 border border-purple-200 px-3 py-1.5 rounded-full hover:bg-purple-50 shadow-sm transition-all active:scale-95"
                   >
                     <Languages className="w-3 h-3" />
-                    全文翻译
+                    全文翻译（未接入）
                   </button>
                 )}
                 {msg.actions.includes('close_pdf') && (

@@ -7,7 +7,8 @@ import type {
   PlanResponse,
 	UploadedFile,
 } from '../../contracts/api';
-import { DIRECT_EXECUTION_EVENTS, PLAN_STREAM_EVENT_NAME } from '../../contracts/events';
+import { DIRECT_EXECUTION_EVENTS } from '../../contracts/events';
+import { subscribeToPlanEvents } from './planStream';
 import { httpClient } from './httpClient';
 
 export interface RequestIdentity {
@@ -74,15 +75,11 @@ export const createPlanEventSource = (
     onError?: () => void;
   },
 ): EventSource => {
-	const source = new EventSource(`${API_BASE_URL}/api/plans/${planId}/stream`, { withCredentials: true });
-  source.addEventListener(PLAN_STREAM_EVENT_NAME, (evt) => {
-    const parsed = JSON.parse((evt as MessageEvent).data) as PlanEvent;
-    handlers.onPlanEvent(parsed);
-  });
-  if (handlers.onError) {
-    source.onerror = handlers.onError;
-  }
-  return source;
+  return subscribeToPlanEvents<PlanEvent>(
+    new EventSource(`${API_BASE_URL}/api/plans/${planId}/stream`, { withCredentials: true }),
+    planId,
+    handlers,
+  );
 };
 
 const parseSseChunk = (chunk: string): { type: string; data: string }[] => {
@@ -106,9 +103,11 @@ export const executeTaskStream = async (
     onResult: (rawData: string) => void;
     onError: (errorMessage: string) => void;
   },
+  signal?: AbortSignal,
 ): Promise<void> => {
   const response = await fetch(`${API_BASE_URL}/api/execute`, {
     method: 'POST',
+    signal,
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

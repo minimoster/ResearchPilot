@@ -1,5 +1,6 @@
 import { FileUp, Languages } from 'lucide-react';
 import { Viewer, Worker } from '@react-pdf-viewer/core';
+import { pdfWorkerUrl, safePdfDocumentParams } from './safePdfConfig';
 import type { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout';
 import type { Plugin } from '@react-pdf-viewer/core';
 
@@ -31,7 +32,7 @@ export function PdfPanel(props: PdfPanelProps) {
             className="flex items-center gap-1 text-blue-600 hover:text-blue-700 bg-white px-2 py-1 rounded border border-blue-200 shadow-sm transition-all active:scale-95"
           >
             <Languages className={`w-3 h-3 ${isFullTranslating ? 'animate-spin' : ''}`} />
-            {isFullTranslating ? '翻译中...' : '全文翻译'}
+            {isFullTranslating ? '翻译中...' : '全文翻译（未接入）'}
           </button>
           <span className="flex items-center gap-1 text-gray-400">
             <FileUp className="w-3 h-3" /> 切换文档
@@ -39,9 +40,9 @@ export function PdfPanel(props: PdfPanelProps) {
         </div>
       </div>
       <div className="flex-1 overflow-y-auto relative">
-        <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js">
+        <Worker workerUrl={pdfWorkerUrl}>
           <div style={{ height: '100%', width: '100%' }}>
-            <Viewer fileUrl={pdfUrl} plugins={[defaultLayoutPluginInstance, aiTranslationPluginInstance]} />
+            <Viewer fileUrl={pdfUrl} transformGetDocumentParams={safePdfDocumentParams} plugins={[defaultLayoutPluginInstance, aiTranslationPluginInstance]} />
           </div>
         </Worker>
       </div>

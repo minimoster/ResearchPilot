@@ -2,6 +2,8 @@ package Intent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -311,6 +313,7 @@ func (c *IntentClassifier) classifyRewriteAndExtractParallel(ctx context.Context
 }
 
 func (c *IntentClassifier) loadPromptMemory(ctx context.Context, userID, sessionID string) (*PromptMemory, error) {
+	memorySessionID := scopedMemorySessionID(userID, sessionID)
 	if c == nil || c.memoryStore == nil || !c.memoryStore.Enabled() || strings.TrimSpace(sessionID) == "" {
 		return &PromptMemory{
 			SessionID:   sessionID,
@@ -322,11 +325,11 @@ func (c *IntentClassifier) loadPromptMemory(ctx context.Context, userID, session
 	}
 
 	ttl := sessionTTLFromEnv()
-	if err := c.memoryStore.EnsureSession(ctx, userID, sessionID, ttl); err != nil {
+	if err := c.memoryStore.EnsureSession(ctx, userID, memorySessionID, ttl); err != nil {
 		return nil, err
 	}
 
-	turns, err := c.memoryStore.LoadRecentTurns(ctx, sessionID, turnsFetchFromEnv())
+	turns, err := c.memoryStore.LoadRecentTurns(ctx, memorySessionID, turnsFetchFromEnv())
 	if err != nil {
 		return nil, err
 	}
@@ -351,6 +354,7 @@ func (c *IntentClassifier) loadPromptMemory(ctx context.Context, userID, session
 }
 
 func (c *IntentClassifier) persistTurnsAsync(ctx context.Context, userID, sessionID, rawQuery string, intentCtx models.IntentContext) {
+	memorySessionID := scopedMemorySessionID(userID, sessionID)
 	if c == nil || c.memoryStore == nil || !c.memoryStore.Enabled() || strings.TrimSpace(sessionID) == "" {
 		return
 	}
@@ -360,11 +364,11 @@ func (c *IntentClassifier) persistTurnsAsync(ctx context.Context, userID, sessio
 
 		ttl := sessionTTLFromEnv()
 		maxTurns := turnsMaxFromEnv()
-		if err := c.memoryStore.EnsureSession(writeCtx, userID, sessionID, ttl); err != nil {
+		if err := c.memoryStore.EnsureSession(writeCtx, userID, memorySessionID, ttl); err != nil {
 			log.Printf("[IntentClassifier] ensure redis session failed: %v", err)
 			return
 		}
-		if err := c.memoryStore.AppendTurn(writeCtx, sessionID, StoredTurn{
+		if err := c.memoryStore.AppendTurn(writeCtx, memorySessionID, StoredTurn{
 			Role:    "user",
 			Content: rawQuery,
 		}, maxTurns, ttl); err != nil {
@@ -372,7 +376,7 @@ func (c *IntentClassifier) persistTurnsAsync(ctx context.Context, userID, sessio
 			return
 		}
 		if strings.TrimSpace(intentCtx.RewrittenIntent) != "" {
-			if err := c.memoryStore.AppendTurn(writeCtx, sessionID, StoredTurn{
+			if err := c.memoryStore.AppendTurn(writeCtx, memorySessionID, StoredTurn{
 				Role:       "assistant",
 				Content:    intentCtx.RewrittenIntent,
 				IntentType: intentCtx.IntentType,
@@ -386,6 +390,7 @@ func (c *IntentClassifier) persistTurnsAsync(ctx context.Context, userID, sessio
 
 // RecordTurn 用于在 chat 链路写入真实消息记录，供短期记忆复用。
 func (c *IntentClassifier) RecordTurn(ctx context.Context, userID, sessionID string, turn StoredTurn) {
+	memorySessionID := scopedMemorySessionID(userID, sessionID)
 	if c == nil || c.memoryStore == nil || !c.memoryStore.Enabled() || strings.TrimSpace(sessionID) == "" {
 		return
 	}
@@ -394,11 +399,11 @@ func (c *IntentClassifier) RecordTurn(ctx context.Context, userID, sessionID str
 	defer cancel()
 
 	ttl := sessionTTLFromEnv()
-	if err := c.memoryStore.EnsureSession(writeCtx, userID, sessionID, ttl); err != nil {
+	if err := c.memoryStore.EnsureSession(writeCtx, userID, memorySessionID, ttl); err != nil {
 		log.Printf("[IntentClassifier] ensure redis session failed: %v", err)
 		return
 	}
-	if err := c.memoryStore.AppendTurn(writeCtx, sessionID, turn, turnsMaxFromEnv(), ttl); err != nil {
+	if err := c.memoryStore.AppendTurn(writeCtx, memorySessionID, turn, turnsMaxFromEnv(), ttl); err != nil {
 		log.Printf("[IntentClassifier] append turn failed: %v", err)
 	}
 }
@@ -623,4 +628,12 @@ func buildRewriteUserPrompt(rawQuery string, memory *PromptMemory) string {
 
 func buildPaperSearchUserPrompt(rawQuery string, memory *PromptMemory) string {
 	return prompts.PaperSearchUserPrompt(rawQuery, formatMemoryForPrompt(memory))
+}
+
+// Version the namespace and never fall back to legacy session-only keys: those
+// keys may contain another user's conversation. JSON avoids delimiter collisions.
+func scopedMemorySessionID(userID, sessionID string) string {
+	encoded, _ := json.Marshal([]string{userID, sessionID})
+	digest := sha256.Sum256(encoded)
+	return "v2:" + hex.EncodeToString(digest[:])
 }

@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"scholar-agent-backend/internal/models"
 )
@@ -45,6 +44,14 @@ func decideReproductionMode(task *models.Task, workspacePath string) Reproductio
 	}
 	fullRequested := taskBoolInput(task, "full_reproduction_requested") || requestedMode == reproductionModeFull
 	return DecidePaperReproductionMode(requestedMode, fullRequested, workspacePath)
+}
+
+// FullReproductionRequested reports whether runtime configuration can select a
+// full run. Approval checks use the same normalization and environment override
+// as execution, before probing resources or starting any work.
+func FullReproductionRequested(requestedMode string, fullRequested bool) bool {
+	mode := normalizeReproductionMode(chooseNonEmpty(os.Getenv("PAPER_REPRO_MODE"), requestedMode))
+	return mode == reproductionModeFull || (mode == reproductionModeAuto && fullRequested)
 }
 
 func DecidePaperReproductionMode(requestedMode string, fullRequested bool, workspacePath string) ReproductionModeDecision {
@@ -168,14 +175,6 @@ func detectMemoryGB() float64 {
 		}
 	}
 	return 0
-}
-
-func detectDiskFreeGB(path string) float64 {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0
-	}
-	return float64(stat.Bavail) * float64(stat.Bsize) / 1024 / 1024 / 1024
 }
 
 func detectCUDAGPUNames() []string {

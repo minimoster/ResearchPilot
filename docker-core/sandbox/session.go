@@ -62,8 +62,14 @@ func NewSession(ctx context.Context, engine *Engine, auditLogDir string, timeout
 // Execute 向 TTY 注入命令并等待输出
 // 使用唯一 delimiter 界定命令输出边界
 func (s *Session) Execute(ctx context.Context, command string) (*ExecResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// 1. 生成唯一 delimiter
 	delimiter := fmt.Sprintf("__SANDBOX_EOF_%d__", time.Now().UnixNano())
@@ -87,37 +93,34 @@ func (s *Session) Execute(ctx context.Context, command string) (*ExecResult, err
 		return nil, fmt.Errorf("failed to write command: %w", err)
 	}
 
-	// 4. 设置超时
-	timeoutCh := make(chan struct{})
-	var timeoutOnce sync.Once
-	closeTimeout := func() {
-		timeoutOnce.Do(func() {
-			close(timeoutCh)
-		})
-	}
-
-	var timer *time.Timer
+	// Wait for the cancellation worker before releasing the session mutex. An
+	// interrupt from an expired command must never land in the following command.
+	execCtx := ctx
+	cancel := func() {}
 	if s.timeout > 0 {
-		timer = time.AfterFunc(s.timeout, func() {
-			closeTimeout()
-			// 超时后发送 Ctrl+C 中断命令，而不是杀死沙箱
-			io.WriteString(s.conn, "\x03\n")
-		})
-		defer timer.Stop()
+		execCtx, cancel = context.WithTimeout(ctx, s.timeout)
 	}
-
-	// 让执行可被上层 context 取消（例如 watchdog 的 command timeout）。
+	timeoutCh := make(chan struct{})
 	ctxWatchDone := make(chan struct{})
-	defer close(ctxWatchDone)
+	ctxWatchExited := make(chan struct{})
 	go func() {
+		defer close(ctxWatchExited)
 		select {
-		case <-ctx.Done():
-			closeTimeout()
-			io.WriteString(s.conn, "\x03\n")
+		case <-execCtx.Done():
+			// The hijacked Docker connection supports write deadlines. Do not
+			// let an unresponsive daemon turn cancellation into an unbounded wait.
+			if conn, ok := s.conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
+				_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
+				_, _ = io.WriteString(s.conn, "\x03\n")
+				_ = conn.SetWriteDeadline(time.Time{})
+			} else {
+				_, _ = io.WriteString(s.conn, "\x03\n")
+			}
+			close(timeoutCh)
 		case <-ctxWatchDone:
-			return
 		}
 	}()
+	defer func() { close(ctxWatchDone); <-ctxWatchExited; cancel() }()
 
 	// 5. nudge goroutine：检测 Docker Desktop (Windows) 缓冲问题
 	// 当长时间（8秒）无新输出时，发送 \n 触发 bash 输出 prompt，

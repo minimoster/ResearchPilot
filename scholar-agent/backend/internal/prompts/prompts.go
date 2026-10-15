@@ -719,9 +719,9 @@ The adapter contract is mandatory:
 - Accept --dataset, --output-dir, --limit, --repo-root, and optional --seed arguments.
 - Support the dataset format stated in the manifest without changing the source dataset.
 - Add --repo-root to sys.path and use the real repository model/evaluation API.
-- Process no more than --limit rows.
+- Process exactly the first min(--limit, dataset row count) rows, in source order.
 - Write metrics.json as a JSON object containing only measured numeric metrics.
-- Write predictions.jsonl with one JSON object per processed sample. Every object must contain prediction; labeled datasets must also contain target.
+- Write predictions.jsonl with one JSON object per processed sample. Every object must contain prediction and index (the zero-based source row index); labeled datasets must also contain the original dataset target, without alteration.
 - Write run_manifest.json with status, dataset_sha256, sample_count, seed, and adapter.
 - Compute dataset_sha256 from the actual dataset bytes.
 - Print one final JSON summary line containing status, sample_count, metrics, and dataset_sha256.

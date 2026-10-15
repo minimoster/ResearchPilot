@@ -10,7 +10,7 @@ import (
 
 func secureDockerRunArgs(image string) ([]string, error) {
 	image = strings.TrimSpace(image)
-	if image == "" {
+	if image == "" || strings.HasPrefix(image, "-") || strings.ContainsAny(image, " \t\r\n") {
 		return nil, fmt.Errorf("sandbox image is empty")
 	}
 	if !sandboxImageAllowed(image) {
@@ -19,6 +19,7 @@ func secureDockerRunArgs(image string) ([]string, error) {
 
 	args := []string{
 		"run", "-d", "--rm",
+		"--label", managedSandboxLabel + "=true",
 		"--cpus", envOrDefault("SANDBOX_CPU_LIMIT", "2"),
 		"--memory", envOrDefault("SANDBOX_MEMORY_LIMIT", "4g"),
 		"--pids-limit", envOrDefault("SANDBOX_PIDS_LIMIT", "256"),

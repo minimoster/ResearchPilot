@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"scholar-agent-backend/internal/models"
@@ -62,11 +63,12 @@ func (s *FilePlanStore) SavePlan(plan *models.PlanGraph) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.plans[plan.ID] = clonePlanGraph(plan)
-	if _, ok := s.events[plan.ID]; !ok {
-		s.events[plan.ID] = []models.PlanEvent{}
+	snapshot := fileSnapshot{Plans: maps.Clone(s.plans), Events: maps.Clone(s.events)}
+	snapshot.Plans[plan.ID] = clonePlanGraph(plan)
+	if _, ok := snapshot.Events[plan.ID]; !ok {
+		snapshot.Events[plan.ID] = []models.PlanEvent{}
 	}
-	return s.persistLocked()
+	return s.persistLocked(snapshot)
 }
 
 func (s *FilePlanStore) GetPlan(planID string) (*models.PlanGraph, error) {
@@ -90,6 +92,12 @@ func (s *FilePlanStore) ListPlans() ([]*models.PlanGraph, error) {
 }
 
 func (s *FilePlanStore) UpdatePlan(planID string, update func(*models.PlanGraph) error) error {
+	return s.UpdatePlanWithEvents(planID, func(plan *models.PlanGraph) ([]models.PlanEvent, error) {
+		return nil, update(plan)
+	})
+}
+
+func (s *FilePlanStore) UpdatePlanWithEvents(planID string, update func(*models.PlanGraph) ([]models.PlanEvent, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	plan, ok := s.plans[planID]
@@ -97,11 +105,18 @@ func (s *FilePlanStore) UpdatePlan(planID string, update func(*models.PlanGraph)
 		return fmt.Errorf("plan not found: %s", planID)
 	}
 	working := clonePlanGraph(plan)
-	if err := update(working); err != nil {
+	events, err := update(working)
+	if err != nil {
 		return err
 	}
-	s.plans[planID] = working
-	return s.persistLocked()
+	history := append([]models.PlanEvent(nil), s.events[planID]...)
+	for _, event := range events {
+		history = append(history, clonePlanEvent(event))
+	}
+	snapshot := fileSnapshot{Plans: maps.Clone(s.plans), Events: maps.Clone(s.events)}
+	snapshot.Plans[planID] = working
+	snapshot.Events[planID] = history
+	return s.persistLocked(snapshot)
 }
 
 func (s *FilePlanStore) AppendEvent(planID string, event models.PlanEvent) error {
@@ -110,8 +125,9 @@ func (s *FilePlanStore) AppendEvent(planID string, event models.PlanEvent) error
 	if _, ok := s.plans[planID]; !ok {
 		return fmt.Errorf("plan not found: %s", planID)
 	}
-	s.events[planID] = append(s.events[planID], clonePlanEvent(event))
-	return s.persistLocked()
+	snapshot := fileSnapshot{Plans: s.plans, Events: maps.Clone(s.events)}
+	snapshot.Events[planID] = append(append([]models.PlanEvent(nil), s.events[planID]...), clonePlanEvent(event))
+	return s.persistLocked(snapshot)
 }
 
 func (s *FilePlanStore) ListEvents(planID string) ([]models.PlanEvent, error) {
@@ -128,11 +144,11 @@ func (s *FilePlanStore) ListEvents(planID string) ([]models.PlanEvent, error) {
 	return out, nil
 }
 
-func (s *FilePlanStore) persistLocked() error {
+func (s *FilePlanStore) persistLocked(snapshot fileSnapshot) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("create plan store directory: %w", err)
 	}
-	data, err := json.MarshalIndent(fileSnapshot{Plans: s.plans, Events: s.events}, "", "  ")
+	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode plan store: %w", err)
 	}
@@ -160,6 +176,10 @@ func (s *FilePlanStore) persistLocked() error {
 	if err := os.Rename(temporaryPath, s.path); err != nil {
 		return fmt.Errorf("replace plan store: %w", err)
 	}
+	// Rename is the commit point. Pre-commit failures leave memory untouched;
+	// after it, memory must match the visible file even if directory sync fails.
+	s.plans = snapshot.Plans
+	s.events = snapshot.Events
 	directory, err := os.Open(filepath.Dir(s.path))
 	if err != nil {
 		return fmt.Errorf("open plan store directory: %w", err)

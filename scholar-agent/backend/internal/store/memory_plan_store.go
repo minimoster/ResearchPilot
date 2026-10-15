@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"reflect"
 	"scholar-agent-backend/internal/models"
 	"sync"
 )
@@ -57,20 +58,29 @@ func (s *MemoryPlanStore) ListPlans() ([]*models.PlanGraph, error) {
 }
 
 func (s *MemoryPlanStore) UpdatePlan(planID string, update func(*models.PlanGraph) error) error {
+	return s.UpdatePlanWithEvents(planID, func(plan *models.PlanGraph) ([]models.PlanEvent, error) {
+		return nil, update(plan)
+	})
+}
+
+func (s *MemoryPlanStore) UpdatePlanWithEvents(planID string, update func(*models.PlanGraph) ([]models.PlanEvent, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	plan, ok := s.plans[planID]
 	if !ok {
 		return fmt.Errorf("plan not found: %s", planID)
 	}
-
 	working := clonePlanGraph(plan)
-	if err := update(working); err != nil {
+	events, err := update(working)
+	if err != nil {
 		return err
 	}
-
+	history := append([]models.PlanEvent(nil), s.events[planID]...)
+	for _, event := range events {
+		history = append(history, clonePlanEvent(event))
+	}
 	s.plans[planID] = working
+	s.events[planID] = history
 	return nil
 }
 
@@ -192,7 +202,52 @@ func clonePlanEvent(event models.PlanEvent) models.PlanEvent {
 func cloneStringAnyMap(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in))
 	for k, v := range in {
-		out[k] = v
+		if v == nil {
+			out[k] = nil
+		} else {
+			out[k] = cloneNestedValue(reflect.ValueOf(v)).Interface()
+		}
 	}
 	return out
+}
+
+// cloneNestedValue preserves concrete types (including []map[string]any inputs)
+// while isolating mutable containers in JSON-shaped metadata and event payloads.
+func cloneNestedValue(value reflect.Value) reflect.Value {
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return value
+		}
+		out := reflect.New(value.Type()).Elem()
+		out.Set(cloneNestedValue(value.Elem()))
+		return out
+	case reflect.Map:
+		if value.IsNil() {
+			return value
+		}
+		out := reflect.MakeMapWithSize(value.Type(), value.Len())
+		iter := value.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), cloneNestedValue(iter.Value()))
+		}
+		return out
+	case reflect.Slice:
+		if value.IsNil() {
+			return value
+		}
+		out := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for i := 0; i < value.Len(); i++ {
+			out.Index(i).Set(cloneNestedValue(value.Index(i)))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(value.Type()).Elem()
+		for i := 0; i < value.Len(); i++ {
+			out.Index(i).Set(cloneNestedValue(value.Index(i)))
+		}
+		return out
+	default:
+		return value
+	}
 }

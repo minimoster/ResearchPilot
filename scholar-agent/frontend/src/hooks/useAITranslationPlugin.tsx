@@ -13,29 +13,12 @@ import '@react-pdf-viewer/highlight/lib/styles/index.css';
  */
 export const useAITranslationPlugin = (onAskAI?: (text: string) => void) => {
   const [translatedText, setTranslatedText] = useState('');
-  const [isTranslating, setIsTranslating] = useState(false);
+  const isTranslating = false;
 
-  // 关键节点：调用大模型 API 进行翻译
-  const fetchTranslation = async (text: string) => {
-    if (!text || !text.trim()) return;
-
-    setIsTranslating(true);
-    setTranslatedText('');
-    
-    try {
-      // 在这个演示版本中，我们模拟 AI 翻译逻辑。
-      // 实际应用中，这里应该调用后端的翻译接口
-      const mockResult = `【AI 译文】：在真实的实现中，这里将调用 DeepSeek 返回关于 "${text.substring(0, 30)}..." 的高质量中文学术翻译。系统已自动识别上下文专业术语。`;
-      
-      for (let i = 0; i < mockResult.length; i++) {
-        await new Promise(r => setTimeout(r, 20));
-        setTranslatedText(prev => prev + mockResult[i]);
-      }
-    } catch {
-      setTranslatedText('请求 AI 翻译时发生网络错误，请重试。');
-    } finally {
-      setIsTranslating(false);
-    }
+  // Translation is not connected yet. Never simulate an API result.
+  const fetchTranslation = (text: string) => {
+    if (!text.trim()) return;
+    setTranslatedText('划词翻译服务尚未接入。你可以点击下方按钮，将选中的原文带入对话，再提出翻译请求。');
   };
 
   const highlightPluginInstance = highlightPlugin({
@@ -58,7 +41,7 @@ export const useAITranslationPlugin = (onAskAI?: (text: string) => void) => {
           className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
         >
           <Sparkles className="w-4 h-4" />
-          🪄 AI 翻译至中文
+          翻译说明（服务未接入）
         </button>
       </div>
     ),

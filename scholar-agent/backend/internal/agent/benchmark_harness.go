@@ -269,7 +269,7 @@ func (a *ResearchCodingAgent) runBenchmarkHarness(ctx context.Context, sandboxID
 	containerOutput := "/workspace/" + filepath.ToSlash(outputRelative)
 	command := []string{
 		"bash", "-lc", fmt.Sprintf(
-			"cd /workspace && PYTHONPATH=/workspace:${PYTHONPATH:-} python3 %s --dataset %s --output-dir %s --limit %d --repo-root /workspace --seed 17",
+			"cd /workspace && PYTHONPATH=/workspace:${PYTHONPATH:-} PYTHONDONTWRITEBYTECODE=1 python3 %s --dataset %s --output-dir %s --limit %d --repo-root /workspace --seed 17",
 			shellEscape(benchmarkAdapterFile), shellEscape(containerDataset), shellEscape(containerOutput), limit,
 		),
 	}
@@ -356,7 +356,7 @@ func validateBenchmarkOutputDirectory(workspacePath, outputRelative string, mani
 	if runManifest.DatasetSHA256 != manifest.SHA256 {
 		return models.BenchmarkHarnessReport{}, fmt.Errorf("adapter dataset hash mismatch")
 	}
-	if runManifest.SampleCount <= 0 || runManifest.SampleCount > limit || runManifest.SampleCount > manifest.RowCount {
+	if runManifest.SampleCount <= 0 || runManifest.SampleCount != benchmarkMinInt(limit, manifest.RowCount) {
 		return models.BenchmarkHarnessReport{}, fmt.Errorf("adapter sample count %d violates limit %d", runManifest.SampleCount, limit)
 	}
 	predictionsPath := filepath.Join(outputPath, "predictions.jsonl")
@@ -366,6 +366,9 @@ func validateBenchmarkOutputDirectory(workspacePath, outputRelative string, mani
 	}
 	if len(predictions) != runManifest.SampleCount {
 		return models.BenchmarkHarnessReport{}, fmt.Errorf("prediction count %d does not match sample count %d", len(predictions), runManifest.SampleCount)
+	}
+	if err := validateBenchmarkPredictionTargets(workspacePath, manifest, predictions); err != nil {
+		return models.BenchmarkHarnessReport{}, err
 	}
 	if err := validateBenchmarkMetricsAgainstPredictions(metrics, predictions, manifest.SuggestedTask); err != nil {
 		return models.BenchmarkHarnessReport{}, err
@@ -388,6 +391,13 @@ func decodeBenchmarkMetrics(raw []byte) (map[string]float64, error) {
 	}
 	metrics := map[string]float64{}
 	for key, rawValue := range values {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" {
+			return nil, fmt.Errorf("metric name is empty")
+		}
+		if _, duplicate := metrics[key]; duplicate {
+			return nil, fmt.Errorf("duplicate metric name %q", key)
+		}
 		var value float64
 		switch typed := rawValue.(type) {
 		case json.Number:
@@ -413,6 +423,7 @@ func decodeBenchmarkMetrics(raw []byte) (map[string]float64, error) {
 }
 
 type benchmarkPredictionRecord struct {
+	Index      *int
 	Prediction any
 	Target     any
 }
@@ -439,7 +450,7 @@ func readBenchmarkPredictionLines(path string, requireTarget bool, maxRecords in
 			continue
 		}
 		var object map[string]any
-		if err := json.Unmarshal([]byte(line), &object); err != nil {
+		if err := decodeBenchmarkJSON([]byte(line), &object); err != nil {
 			return nil, fmt.Errorf("prediction line %d is not JSON", len(records)+1)
 		}
 		prediction, hasPrediction := object["prediction"]
@@ -450,7 +461,17 @@ func readBenchmarkPredictionLines(path string, requireTarget bool, maxRecords in
 		if requireTarget && (!hasTarget || target == nil) {
 			return nil, fmt.Errorf("prediction line %d is missing target", len(records)+1)
 		}
-		records = append(records, benchmarkPredictionRecord{Prediction: prediction, Target: target})
+		var index *int
+		if rawIndex, ok := object["index"]; ok {
+			number, ok := rawIndex.(json.Number)
+			value, indexErr := number.Int64()
+			if !ok || indexErr != nil || value < 0 || value > 100000 {
+				return nil, fmt.Errorf("prediction line %d has invalid index", len(records)+1)
+			}
+			i := int(value)
+			index = &i
+		}
+		records = append(records, benchmarkPredictionRecord{Index: index, Prediction: prediction, Target: target})
 		if maxRecords > 0 && len(records) > maxRecords {
 			return nil, fmt.Errorf("prediction count exceeds declared sample count %d", maxRecords)
 		}
@@ -459,6 +480,54 @@ func readBenchmarkPredictionLines(path string, requireTarget bool, maxRecords in
 		return nil, err
 	}
 	return records, nil
+}
+
+// Bind every reported target to the immutable uploaded dataset, rather than
+// trusting the adapter to supply its own ground truth. The contract evaluates
+// the first N rows in source order; indices cannot select only easy samples.
+func validateBenchmarkPredictionTargets(workspacePath string, manifest models.DatasetManifest, predictions []benchmarkPredictionRecord) error {
+	relative, err := locateMaterializedBenchmarkDataset(workspacePath, manifest.Name)
+	if err != nil {
+		return err
+	}
+	path, err := benchmarkPathInWorkspace(workspacePath, relative)
+	if err != nil {
+		return err
+	}
+	checksum, err := benchmarkRegularFileSHA(path, "benchmark dataset")
+	if err != nil || checksum != manifest.SHA256 {
+		return fmt.Errorf("benchmark dataset hash does not match manifest")
+	}
+	rows, count, err := readBenchmarkRowsWithLimit(benchmarkUploadedFile{Name: manifest.Name, StoragePath: path}, len(predictions))
+	if err != nil {
+		return err
+	}
+	if count != manifest.RowCount || len(rows) != len(predictions) {
+		return fmt.Errorf("benchmark dataset row count does not match predictions")
+	}
+	for i, record := range predictions {
+		if record.Index == nil || *record.Index != i {
+			return fmt.Errorf("prediction line %d must identify dataset index %d", i+1, i)
+		}
+		if manifest.TargetColumn == "" {
+			continue
+		}
+		expected, ok := rows[i][manifest.TargetColumn]
+		if !ok {
+			return fmt.Errorf("dataset row %d has no target column %q", i, manifest.TargetColumn)
+		}
+		actual := fmt.Sprint(record.Target)
+		matches := actual == expected
+		if manifest.SuggestedTask == "regression" {
+			target, targetErr := strconv.ParseFloat(actual, 64)
+			source, sourceErr := strconv.ParseFloat(expected, 64)
+			matches = targetErr == nil && sourceErr == nil && !math.IsNaN(target) && !math.IsInf(target, 0) && target == source
+		}
+		if !matches {
+			return fmt.Errorf("prediction target at dataset index %d does not match uploaded dataset", i)
+		}
+	}
+	return nil
 }
 
 func validateBenchmarkMetricsAgainstPredictions(metrics map[string]float64, predictions []benchmarkPredictionRecord, taskType string) error {
@@ -546,16 +615,19 @@ func recomputeRegressionMetrics(predictions []benchmarkPredictionRecord) (float6
 	mae := 0.0
 	for index, record := range predictions {
 		prediction, err := strconv.ParseFloat(fmt.Sprint(record.Prediction), 64)
-		if err != nil {
-			return 0, 0, fmt.Errorf("prediction line %d is not numeric", index+1)
+		if err != nil || math.IsNaN(prediction) || math.IsInf(prediction, 0) {
+			return 0, 0, fmt.Errorf("prediction line %d is not finite numeric", index+1)
 		}
 		target, err := strconv.ParseFloat(fmt.Sprint(record.Target), 64)
-		if err != nil {
-			return 0, 0, fmt.Errorf("prediction target line %d is not numeric", index+1)
+		if err != nil || math.IsNaN(target) || math.IsInf(target, 0) {
+			return 0, 0, fmt.Errorf("prediction target line %d is not finite numeric", index+1)
 		}
 		delta := prediction - target
 		mse += delta * delta
 		mae += math.Abs(delta)
+		if math.IsNaN(mse) || math.IsInf(mse, 0) || math.IsInf(mae, 0) {
+			return 0, 0, fmt.Errorf("regression metric overflow at prediction line %d", index+1)
+		}
 	}
 	return mse / float64(len(predictions)), mae / float64(len(predictions)), nil
 }
@@ -570,6 +642,9 @@ func benchmarkMetric(metrics map[string]float64, name string) (float64, bool) {
 }
 
 func benchmarkMetricClose(reported, recomputed float64) bool {
+	if math.IsNaN(reported) || math.IsInf(reported, 0) || math.IsNaN(recomputed) || math.IsInf(recomputed, 0) {
+		return false
+	}
 	tolerance := math.Max(1e-6, math.Abs(recomputed)*1e-4)
 	return math.Abs(reported-recomputed) <= tolerance
 }

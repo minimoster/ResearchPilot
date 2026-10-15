@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"scholar-agent-backend/internal/models"
@@ -739,13 +738,7 @@ func cloneRepositoryWithRetry(ctx context.Context, repoURL, workspacePath string
 
 		cloneCtx, cancel := context.WithTimeout(ctx, envDuration("REPO_CLONE_TIMEOUT", 45*time.Second))
 		cmd := exec.CommandContext(cloneCtx, "git", args...)
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Cancel = func() error {
-			if cmd.Process == nil {
-				return nil
-			}
-			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
+		configureRepoCloneCancellation(cmd)
 		cmd.WaitDelay = 5 * time.Second
 		output, err := cmd.CombinedOutput()
 		cancel()

@@ -225,11 +225,11 @@ export default function ScholarApp() {
 
   const runtime = useScholarRuntime({
     nodes,
+    activePlanId: chatFlow.activePlanId,
     setNodes,
     appendChatMessage: chatFlow.appendChatMessage,
 	identity: chatFlow.requestIdentity,
   });
-  const { resetRuntimeState } = runtime;
 
   const pdfFlow = usePdfAssistFlow({
     setPrompt: chatFlow.setPrompt,
@@ -240,10 +240,6 @@ export default function ScholarApp() {
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [runtime.selectedTaskState.logs]);
-
-  useEffect(() => {
-    resetRuntimeState();
-  }, [chatFlow.activeSessionId, resetRuntimeState]);
 
   const runtimeContextValue = useMemo<ScholarRuntimeContextValue>(
     () => ({

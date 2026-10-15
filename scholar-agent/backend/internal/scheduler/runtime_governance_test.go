@@ -163,3 +163,119 @@ func governanceTestPlan(id string, nodeCount int) *models.PlanGraph {
 	}
 	return plan
 }
+
+func TestSchedulerDeadlineTerminatesPlan(t *testing.T) {
+	planStore := store.NewMemoryPlanStore()
+	plan := governanceTestPlan("deadline-plan", 1)
+	if err := planStore.SavePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewScheduler(planStore, taskExecutorFunc(func(ctx context.Context, _ *models.PlanGraph, _ *models.TaskNode) (*models.TaskExecutionResult, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}), nil, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := runner.ExecutePlan(ctx, plan.ID); err != context.DeadlineExceeded {
+		t.Fatalf("expected deadline error, got %v", err)
+	}
+	finalPlan, _ := planStore.GetPlan(plan.ID)
+	if finalPlan.Status != models.StatusCanceled || finalPlan.Usage.FinishedAt == nil {
+		t.Fatalf("deadline left plan active: status=%s usage=%#v", finalPlan.Status, finalPlan.Usage)
+	}
+	if finalPlan.Nodes[0].Status == models.StatusInProgress || finalPlan.Nodes[0].ExecutionID != "" {
+		t.Fatalf("deadline left a task lease active: %#v", finalPlan.Nodes[0])
+	}
+	events, _ := planStore.ListEvents(plan.ID)
+	foundTerminal := false
+	for _, event := range events {
+		foundTerminal = foundTerminal || event.EventType == "plan_canceled"
+	}
+	if !foundTerminal {
+		t.Fatal("deadline did not publish a terminal event")
+	}
+}
+
+func TestSchedulerParallelBatchRespectsRemainingAttemptBudget(t *testing.T) {
+	planStore := store.NewMemoryPlanStore()
+	plan := governanceTestPlan("parallel-budget-plan", 2)
+	plan.Budget.MaxTaskAttempts = 1
+	for _, node := range plan.Nodes {
+		node.Parallelizable = true
+	}
+	if err := planStore.SavePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewScheduler(planStore, NewDefaultTaskExecutor(), nil, 2)
+	if err := runner.ExecutePlan(context.Background(), plan.ID); err == nil {
+		t.Fatal("expected exhausted budget error")
+	}
+	finalPlan, _ := planStore.GetPlan(plan.ID)
+	if finalPlan.Status != models.StatusCanceled || finalPlan.Usage.TaskAttempts != 1 {
+		t.Fatalf("parallel budget exhaustion left plan active: status=%s attempts=%d", finalPlan.Status, finalPlan.Usage.TaskAttempts)
+	}
+}
+
+func TestReassignTaskUnblocksDependents(t *testing.T) {
+	planStore := store.NewMemoryPlanStore()
+	plan := governanceTestPlan("reassign-dependent-plan", 2)
+	plan.Status = models.StatusFailed
+	plan.Nodes[0].Status = models.StatusFailed
+	plan.Nodes[1].Status = models.StatusBlocked
+	plan.Nodes[1].Dependencies = []string{plan.Nodes[0].ID}
+	plan.Edges = []*models.TaskEdge{{From: plan.Nodes[0].ID, To: plan.Nodes[1].ID, Type: "control"}}
+	if err := planStore.SavePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewScheduler(planStore, NewDefaultTaskExecutor(), nil, 1)
+	if err := runner.ReassignTask(plan.ID, plan.Nodes[0].ID, "coder_agent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.ExecutePlan(context.Background(), plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	finalPlan, _ := planStore.GetPlan(plan.ID)
+	if finalPlan.Status != models.StatusCompleted {
+		t.Fatalf("reassignment left descendants blocked: status=%s descendant=%s", finalPlan.Status, finalPlan.Nodes[1].Status)
+	}
+}
+
+type eventPublisherFunc func(string, models.PlanEvent)
+
+func (fn eventPublisherFunc) Publish(planID string, event models.PlanEvent) { fn(planID, event) }
+
+func TestManualRetryCannotBeBlockedByPreviousFailure(t *testing.T) {
+	planStore := store.NewMemoryPlanStore()
+	plan := governanceTestPlan("retry-failure-race-plan", 2)
+	plan.Nodes[1].Dependencies = []string{plan.Nodes[0].ID}
+	plan.Edges = []*models.TaskEdge{{From: plan.Nodes[0].ID, To: plan.Nodes[1].ID, Type: "control"}}
+	if err := planStore.SavePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	var attempts atomic.Int32
+	var runner *Scheduler
+	retryErr := make(chan error, 1)
+	publisher := eventPublisherFunc(func(_ string, event models.PlanEvent) {
+		if event.EventType == "task_failed" && event.TaskID == plan.Nodes[0].ID {
+			// Reproduce the API retry arriving after failure is committed/published,
+			// but before the previous worker propagates blocked state downstream.
+			retryErr <- runner.RetryTask(plan.ID, event.TaskID)
+		}
+	})
+	runner = NewScheduler(planStore, taskExecutorFunc(func(_ context.Context, _ *models.PlanGraph, task *models.TaskNode) (*models.TaskExecutionResult, error) {
+		if task.ID == plan.Nodes[0].ID && attempts.Add(1) == 1 {
+			return &models.TaskExecutionResult{Status: models.StatusFailed, Error: "first attempt"}, nil
+		}
+		return &models.TaskExecutionResult{Status: models.StatusCompleted}, nil
+	}), publisher, 1)
+	if err := runner.ExecutePlan(context.Background(), plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-retryErr; err != nil {
+		t.Fatal(err)
+	}
+	finalPlan, _ := planStore.GetPlan(plan.ID)
+	if finalPlan.Status != models.StatusCompleted {
+		t.Fatalf("old failure blocked manual retry: status=%s descendant=%s", finalPlan.Status, finalPlan.Nodes[1].Status)
+	}
+}
