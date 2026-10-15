@@ -2,7 +2,7 @@
 
 ## 1. 文档目标
 
-这份文档是 [plan_module_refactor_proposal.md](/D:/mygo/Sea-mult-agent/scholar-agent/docs/plan_module_refactor_proposal.md) 的落地版，用来回答下面几个问题：
+这份文档是 [plan_module_refactor_proposal.md](plan_module_refactor_proposal.md) 的落地版，用来回答下面几个问题：
 
 - 具体要改哪些文件
 - 每个文件准备加什么结构
@@ -35,7 +35,7 @@
 
 ### 文件 1
 
-- [backend/internal/models/task.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/models/task.go)
+- [backend/internal/models/task.go](../../backend/internal/models/task.go)
 
 当前问题：
 
@@ -139,7 +139,7 @@ type PlanGraph struct {
 
 ### 文件 5
 
-- [backend/internal/planner/planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)
+- [backend/internal/planner/planner.go](../../backend/internal/planner/planner.go)
 
 当前问题：
 
@@ -408,7 +408,7 @@ type PlanEvent struct {
 
 ### 文件 16
 
-- [backend/internal/api/routes.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/api/routes.go)
+- [backend/internal/api/routes.go](../../backend/internal/api/routes.go)
 
 当前问题：
 
@@ -470,9 +470,9 @@ type PlanEvent struct {
 
 ### 文件 17
 
-- [backend/internal/agent/coder.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/agent/coder.go)
-- [backend/internal/agent/librarian.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/agent/librarian.go)
-- [backend/internal/agent/data.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/agent/data.go)
+- [backend/internal/agent/coder.go](../../backend/internal/agent/coder.go)
+- [backend/internal/agent/librarian.go](../../backend/internal/agent/librarian.go)
+- [backend/internal/agent/data.go](../../backend/internal/agent/data.go)
 
 当前问题：
 
@@ -499,7 +499,7 @@ type PlanEvent struct {
 
 ### 文件 18
 
-- [frontend/src/App.tsx](/D:/mygo/Sea-mult-agent/scholar-agent/frontend/src/App.tsx)
+- [frontend/src/App.tsx](../../frontend/src/App.tsx)
 
 当前问题：
 

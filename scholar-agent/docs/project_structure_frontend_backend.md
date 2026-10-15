@@ -1,4 +1,4 @@
-# ScholarAgent 项目结构梳理
+# ResearchPilot 项目结构梳理
 
 > [!NOTE]
 > 本文用于快速定位前后端目录，部分描述保留了早期实现语境。当前系统的权威运行架构、DAG、Artifact、Benchmark 与安全边界请以[项目架构文档](project_architecture.md)为准。

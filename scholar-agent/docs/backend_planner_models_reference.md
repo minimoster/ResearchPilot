@@ -28,8 +28,8 @@
 
 代码依据：
 
-- [backend/go.mod](/D:/mygo/Sea-mult-agent/scholar-agent/backend/go.mod)
-- [backend/cmd/api/main.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/cmd/api/main.go)
+- [backend/go.mod](../backend/go.mod)
+- [backend/cmd/api/main.go](../backend/cmd/api/main.go)
 
 ---
 
@@ -37,7 +37,7 @@
 
 ### 3.1 规划入口
 
-- [backend/internal/api/routes.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/api/routes.go)
+- [backend/internal/api/routes.go](../backend/internal/api/routes.go)
 
 关键位置：
 
@@ -52,7 +52,7 @@
 
 ### 3.2 规划器实现
 
-- [backend/internal/planner/planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)
+- [backend/internal/planner/planner.go](../backend/internal/planner/planner.go)
 
 关键对象：
 
@@ -63,7 +63,7 @@
 
 ### 3.3 数据模型
 
-- [backend/internal/models/task.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/models/task.go)
+- [backend/internal/models/task.go](../backend/internal/models/task.go)
 
 关键对象：
 
@@ -96,7 +96,7 @@
 
 代码入口：
 
-- [planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)
+- [planner.go](../backend/internal/planner/planner.go)
 
 要修改规划逻辑时优先看：
 
@@ -113,7 +113,7 @@
 
 代码入口：
 
-- [task.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/models/task.go)
+- [task.go](../backend/internal/models/task.go)
 
 要修改数据结构时优先看：
 
@@ -128,10 +128,10 @@
 ### 5.1 规划请求链路
 
 1. 前端请求 `POST /api/plan`
-2. 进入 [routes.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/api/routes.go) 的 `/api/plan` handler
+2. 进入 [routes.go](../backend/internal/api/routes.go) 的 `/api/plan` handler
 3. handler 根据关键词推断 `intentType`
-4. 调用 [planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go) 里的 `GeneratePlan`
-5. `GeneratePlan` 构造 [task.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/models/task.go) 中定义的 `Plan` 和 `Task`
+4. 调用 [planner.go](../backend/internal/planner/planner.go) 里的 `GeneratePlan`
+5. `GeneratePlan` 构造 [task.go](../backend/internal/models/task.go) 中定义的 `Plan` 和 `Task`
 6. 规划结果作为 JSON 返回前端
 
 ### 5.2 执行衔接链路
@@ -159,7 +159,7 @@
 
 文件：
 
-- [planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)
+- [planner.go](../backend/internal/planner/planner.go)
 
 ### `Framework_Evaluation`
 
@@ -201,7 +201,7 @@
 
 文件：
 
-- [task.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/models/task.go)
+- [task.go](../backend/internal/models/task.go)
 
 ### `TaskStatus`
 
@@ -290,8 +290,8 @@
 
 改这里：
 
-- [backend/internal/api/routes.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/api/routes.go)
-- [backend/internal/planner/planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)
+- [backend/internal/api/routes.go](../backend/internal/api/routes.go)
+- [backend/internal/planner/planner.go](../backend/internal/planner/planner.go)
 
 通常涉及：
 
@@ -304,13 +304,13 @@
 
 改这里：
 
-- [backend/internal/models/task.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/models/task.go)
+- [backend/internal/models/task.go](../backend/internal/models/task.go)
 
 通常还要联动检查：
 
-- [backend/internal/planner/planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)
-- [backend/internal/api/routes.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/api/routes.go)
-- [frontend/src/App.tsx](/D:/mygo/Sea-mult-agent/scholar-agent/frontend/src/App.tsx)
+- [backend/internal/planner/planner.go](../backend/internal/planner/planner.go)
+- [backend/internal/api/routes.go](../backend/internal/api/routes.go)
+- [frontend/src/App.tsx](../frontend/src/App.tsx)
 
 因为前端直接依赖 `Task` / `Plan` 返回结构来渲染 DAG
 
@@ -318,13 +318,13 @@
 
 先改这里：
 
-- [backend/internal/models/task.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/models/task.go)
+- [backend/internal/models/task.go](../backend/internal/models/task.go)
 
 再联动检查：
 
-- [backend/internal/api/routes.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/api/routes.go)
-- [backend/internal/agent/*.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/agent)
-- [frontend/src/App.tsx](/D:/mygo/Sea-mult-agent/scholar-agent/frontend/src/App.tsx)
+- [backend/internal/api/routes.go](../backend/internal/api/routes.go)
+- [backend/internal/agent/*.go](../backend/internal/agent)
+- [frontend/src/App.tsx](../frontend/src/App.tsx)
 
 因为执行状态展示和节点颜色可能依赖状态值
 
@@ -332,7 +332,7 @@
 
 优先改这里：
 
-- [backend/internal/planner/planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)
+- [backend/internal/planner/planner.go](../backend/internal/planner/planner.go)
 
 建议保持这几个边界稳定：
 
@@ -348,13 +348,13 @@
 
 以后凡是涉及“规划与调度后端”，默认按下面顺序定位：
 
-1. 先看 [backend/internal/api/routes.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/api/routes.go) 确认请求入口和调用位置
-2. 再看 [backend/internal/planner/planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go) 确认 DAG 生成逻辑
-3. 最后看 [backend/internal/models/task.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/models/task.go) 确认字段和状态定义
+1. 先看 [backend/internal/api/routes.go](../backend/internal/api/routes.go) 确认请求入口和调用位置
+2. 再看 [backend/internal/planner/planner.go](../backend/internal/planner/planner.go) 确认 DAG 生成逻辑
+3. 最后看 [backend/internal/models/task.go](../backend/internal/models/task.go) 确认字段和状态定义
 
 如果改动影响返回结构，再补查：
 
-- [frontend/src/App.tsx](/D:/mygo/Sea-mult-agent/scholar-agent/frontend/src/App.tsx)
+- [frontend/src/App.tsx](../frontend/src/App.tsx)
 
 ---
 

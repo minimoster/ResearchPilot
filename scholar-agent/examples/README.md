@@ -1,6 +1,6 @@
 # Examples
 
-本目录提供可直接运行、带验收条件的 ScholarAgent 示例。日期化原始结果仍保留在
+本目录提供可直接运行、带验收条件的 ResearchPilot 示例。日期化原始结果仍保留在
 [`docs/experiments`](../docs/experiments/) 中，作为运行证据和审计记录。
 
 | Example | Flow | Runtime | Status |

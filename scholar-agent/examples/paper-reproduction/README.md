@@ -2,7 +2,7 @@
 
 这个示例把项目已经跑通的 `Attention Is All You Need` 实验整理为一条可复用的验收路径。
 它固定使用 `harvardnlp/annotated-transformer`，以 smoke 模式运行注意力结构消融，重点验证
-ScholarAgent 是否能完成从计划生成到沙箱产物回传的完整链路。
+ResearchPilot 是否能完成从计划生成到沙箱产物回传的完整链路。
 
 ## What This Example Tests
 
@@ -91,7 +91,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 
 ## Scope
 
-这是结构级前向 smoke test。系统会克隆并扫描指定仓库，但消融入口由 ScholarAgent 生成，
+这是结构级前向 smoke test。系统会克隆并扫描指定仓库，但消融入口由 ResearchPilot 生成，
 不会下载 WMT14、训练完整 Transformer 或计算 BLEU。CPU 延迟只适用于本次小张量微基准。
 
 另外两组记录用于辅助对照，不属于本示例的完整项目链：
@@ -99,4 +99,4 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 - [`/api/execute` 单节点 CPU 消融](../../docs/experiments/2026-07-17_attention_light_ablation.md)
   验证单任务代码生成与沙箱执行。
 - [独立 V100 GPU 消融](../../docs/experiments/2026-07-17_attention_gpu_ablation.md)
-  验证 CUDA 微基准，但没有经过 ScholarAgent Planner、Scheduler 或 Docker Sandbox DAG。
+  验证 CUDA 微基准，但没有经过 ResearchPilot Planner、Scheduler 或 Docker Sandbox DAG。

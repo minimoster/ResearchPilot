@@ -470,7 +470,7 @@ type PlanGraphState = {
 
 ## 第一步
 
-修改 [backend/internal/api/routes.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/api/routes.go) 中 `/api/plan`
+修改 [backend/internal/api/routes.go](../../backend/internal/api/routes.go) 中 `/api/plan`
 
 目标：
 
@@ -600,16 +600,16 @@ type PlanGraphState = {
 后面如果开始真正改代码，建议默认使用下面这套文档组合：
 
 - 看总体目标：
-  - [plan_module_refactor_proposal.md](/D:/mygo/Sea-mult-agent/scholar-agent/docs/plan_module_refactor_proposal.md)
+  - [plan_module_refactor_proposal.md](plan_module_refactor_proposal.md)
 
 - 看文件落点和实施顺序：
-  - [plan_module_implementation_checklist.md](/D:/mygo/Sea-mult-agent/scholar-agent/docs/plan_module_implementation_checklist.md)
+  - [plan_module_implementation_checklist.md](plan_module_implementation_checklist.md)
 
 - 看结构体、调度、状态机、伪代码：
-  - [plan_module_execution_spec.md](/D:/mygo/Sea-mult-agent/scholar-agent/docs/plan_module_execution_spec.md)
+  - [plan_module_execution_spec.md](plan_module_execution_spec.md)
 
 - 看接口契约和迁移方案：
-  - [plan_module_api_and_migration_spec.md](/D:/mygo/Sea-mult-agent/scholar-agent/docs/plan_module_api_and_migration_spec.md)
+  - [plan_module_api_and_migration_spec.md](plan_module_api_and_migration_spec.md)
 
 ---
 

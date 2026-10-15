@@ -15,7 +15,7 @@
 
 ### 1) 断点重启：/api/execute 支持 plan-aware 单节点执行 + 节点快照
 
-- 文件：[routes.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/api/routes.go)
+- 文件：[routes.go](../../backend/internal/api/routes.go)
 - 目标：让“单节点执行”具备以下能力（仅进程内持久化）：
   - 从 `planStore` 回放该节点 `RequiredArtifacts`（例如 `runtime_session`）作为本次输入
   - 执行完成后把该节点产出的 artifacts 写回 `planStore`，形成“节点快照”，便于后续节点继续跑
@@ -41,31 +41,31 @@
 
 ### 2) sandbox_agent 路由修复：强制走确定性沙箱路径
 
-- 文件：[coder.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/agent/coder.go)
+- 文件：[coder.go](../../backend/internal/agent/coder.go)
 - 变更：`AssignedTo == "sandbox_agent"` 的任务不再走 Eino 生成链路，统一走 `executeSandboxTask()`：
   - 目的：确保 `prepare_runtime/install_dependencies/execute_code` 这类节点稳定产出 `runtime_session/prepared_runtime` 等关键 artifacts，
     避免“创建临时沙箱但不写入 artifact”的路径导致下游缺参。
 
 ### 3) 依赖 spec 清洗：修复 pip 参数拼装与 token 校验
 
-- 文件：[coder.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/agent/coder.go)
+- 文件：[coder.go](../../backend/internal/agent/coder.go)
 - 变更点：
   - `parseDependencySpec()` 增加统一清洗逻辑：去掉反引号/引号、去掉尾逗号、按空白拆分成 argv token（非 shell）
   - 放宽 `isValidDependencyToken()`：允许 `+` 和 URL 常见字符，避免误拒绝如 `torch==1.11.0+cu113`
 
 ### 4) 最小依赖纠错：oscar==2.2.1 -> django-oscar==2.2.1
 
-- 文件：[coder.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/agent/coder.go)
+- 文件：[coder.go](../../backend/internal/agent/coder.go)
 - 规则：仅对已观测到的失败条目 `oscar==2.2.1` 做替换为 `django-oscar==2.2.1`，避免误伤其它同名包用法。
 
 ### 5) 标准库误判修正：补充 shutil
 
-- 文件：[coder.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/agent/coder.go)
+- 文件：[coder.go](../../backend/internal/agent/coder.go)
 - 说明：将 `shutil` 视为标准库，避免被误判为 PyPI 依赖（`pip` 永远装不上 `shutil`）。
 
 ### 6) 最小依赖补齐：langchain -> langchain-community
 
-- 文件：[coder.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/agent/coder.go)
+- 文件：[coder.go](../../backend/internal/agent/coder.go)
 - 规则：当依赖列表包含 `langchain` 且不包含 `langchain-community` 时，自动追加 `langchain-community`，
   避免运行期触发 `ModuleNotFoundError: No module named 'langchain_community'`。
 

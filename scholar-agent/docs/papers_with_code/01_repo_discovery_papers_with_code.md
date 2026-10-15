@@ -56,7 +56,7 @@
 
 对应代码位置：
 
-- [planner.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)
+- [planner.go](../../backend/internal/planner/planner.go)
 
 关键函数：
 
@@ -75,7 +75,7 @@
 
 对应代码位置：
 
-- [agent_planner.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/planner/agent_planner.go)
+- [agent_planner.go](../../backend/internal/planner/agent_planner.go)
 
 ### 3. 节点契约校验
 
@@ -93,7 +93,7 @@
 
 对应代码位置：
 
-- [planner.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)
+- [planner.go](../../backend/internal/planner/planner.go)
 
 ## 执行层改动
 
@@ -110,8 +110,8 @@
 
 对应代码位置：
 
-- [executor.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/scheduler/executor.go)
-- [repo_discovery.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/scheduler/repo_discovery.go)
+- [executor.go](../../backend/internal/scheduler/executor.go)
+- [repo_discovery.go](../../backend/internal/scheduler/repo_discovery.go)
 
 执行入口：
 

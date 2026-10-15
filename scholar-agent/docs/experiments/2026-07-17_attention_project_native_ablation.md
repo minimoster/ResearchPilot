@@ -1,6 +1,6 @@
 # Attention Is All You Need 项目原生 DAG 轻量消融
 
-本实验由 ScholarAgent 项目自身的完整生产链执行，而不是在远端单独启动 Python 脚本。执行路径为：
+本实验由 ResearchPilot 项目自身的完整生产链执行，而不是在远端单独启动 Python 脚本。执行路径为：
 
 `POST /api/plan` -> `PlanStore` -> `POST /api/plans/:id/execute` -> `Scheduler` -> `Librarian/Coder/Sandbox/Data Agent` -> Docker Sandbox -> Artifact 与 SSE 回传。
 
@@ -45,7 +45,7 @@
 
 ## 实验边界
 
-- ScholarAgent 克隆并扫描了指定公开仓库，然后生成受控的 `scholar_repro_smoke.py` 消融入口；消融计算不是仓库原始训练命令。
+- ResearchPilot 克隆并扫描了指定公开仓库，然后生成受控的 `scholar_repro_smoke.py` 消融入口；消融计算不是仓库原始训练命令。
 - 本实验只验证多头注意力结构和项目端到端执行链，不下载 WMT14、不训练完整 Transformer、不计算 BLEU。
 - 延迟来自 CPU 小张量微基准，不能外推为 V100 训练吞吐，也不能与独立 GPU 实验直接比较。
 

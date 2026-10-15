@@ -6,9 +6,9 @@
 
 与其他文档的关系：
 
-- 总体方案： [plan_module_refactor_proposal.md](/D:/mygo/Sea-mult-agent/scholar-agent/docs/plan_module_refactor_proposal.md)
-- 开发清单： [plan_module_implementation_checklist.md](/D:/mygo/Sea-mult-agent/scholar-agent/docs/plan_module_implementation_checklist.md)
-- 当前代码索引： [backend_planner_models_reference.md](/D:/mygo/Sea-mult-agent/scholar-agent/docs/backend_planner_models_reference.md)
+- 总体方案： [plan_module_refactor_proposal.md](plan_module_refactor_proposal.md)
+- 开发清单： [plan_module_implementation_checklist.md](plan_module_implementation_checklist.md)
+- 当前代码索引： [backend_planner_models_reference.md](../backend_planner_models_reference.md)
 
 这份文档重点回答：
 

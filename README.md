@@ -1,8 +1,8 @@
 <div align="center">
 
-# Sea-Mult-Agent
+# ResearchPilot
 
-**ScholarAgent: 从论文理解到沙箱实验的多智能体科研执行系统**
+**科研任务编排与实验验证 Agent**
 
 [![Go](https://img.shields.io/badge/Go-1.26.1-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)](https://react.dev/)
@@ -14,16 +14,16 @@
 
 </div>
 
-![Sea-Mult-Agent architecture](ArchitectureDiagram.png)
+![ResearchPilot architecture](ArchitectureDiagram.png)
 
-Sea-Mult-Agent 面向论文阅读、代码仓库发现、环境准备、受控实验和结果分析等科研工作流。用户提交研究目标后，Planner 会生成 DAG，Scheduler 按依赖调度 Librarian、Coder、Sandbox 和 Data 等角色，并通过 SSE 将日志、状态和结构化产物实时推送到前端。
+ResearchPilot 面向论文阅读、代码仓库发现、环境准备、受控实验和结果分析等科研工作流。用户提交研究目标后，Planner 会生成 DAG，Scheduler 按依赖调度 Librarian、Coder、Sandbox 和 Data 等角色，并通过 SSE 将日志、状态和结构化产物实时推送到前端。
 
 > [!NOTE]
 > 本项目目前是具备持久化、恢复、审批、预算和受限沙箱能力的单机研究原型，不是已完成多租户安全认证的生产服务。Docker 沙箱仍具有较高宿主机权限，部署前请阅读[项目状态与安全说明](#project-status)。
 
-![ScholarAgent dashboard](scholar-agent/docs/assets/scholar-agent-dashboard.png)
+![ResearchPilot dashboard](scholar-agent/docs/assets/scholar-agent-dashboard.png)
 
-## Why Sea-Mult-Agent
+## Why ResearchPilot
 
 | 能力 | 当前实现 |
 |---|---|
@@ -52,8 +52,8 @@ Sea-Mult-Agent 面向论文阅读、代码仓库发现、环境准备、受控�
 ### Start with Docker Compose
 
 ```bash
-git clone https://github.com/yu-xin-c/Sea-mult-agent.git
-cd Sea-mult-agent/scholar-agent
+git clone https://github.com/minimoster/ResearchPilot.git
+cd ResearchPilot/scholar-agent
 
 cp backend.env.example backend.env
 # 编辑 backend.env，至少填写 OPENAI_API_KEY
@@ -119,7 +119,7 @@ Attention Is All You Need，使用 smoke 模式运行轻量注意力消融，
 
 点击节点后可以查看任务描述、实时日志、生成代码、报告、指标和图表。论文复现末端还会提供三泳道 Claim-to-Evidence Graph，可缩放查看每条主张、独立准则、证据状态和 Artifact 哈希。
 
-![ScholarAgent node execution panel](scholar-agent/docs/assets/scholar-agent-node-panel.png)
+![ResearchPilot node execution panel](scholar-agent/docs/assets/scholar-agent-node-panel.png)
 
 ## Architecture
 
@@ -235,7 +235,7 @@ Windows 用户可使用 `scholar-agent/scripts/windows/` 中的 PowerShell 脚�
 
 ## Reproduction
 
-项目包含可审计的轻量论文复现记录，用于验证 ScholarAgent 的执行链和结构行为，不替代论文完整训练结果。
+项目包含可审计的轻量论文复现记录，用于验证 ResearchPilot 的执行链和结构行为，不替代论文完整训练结果。
 
 从 [`examples/paper-reproduction`](scholar-agent/examples/paper-reproduction/) 开始，可以通过 Web API
 重跑同一条项目原生链路，并自动验收 DAG 状态、仓库选择、关键 Artifact 和事件历史。
@@ -244,15 +244,15 @@ Windows 用户可使用 `scholar-agent/scripts/windows/` 中的 PowerShell 脚�
 |---|---|---|
 | [项目原生 DAG 消融](scholar-agent/docs/experiments/2026-07-17_attention_project_native_ablation.md) | `/api/plan` -> Scheduler -> Agent -> Docker -> SSE/Artifact | 8/8 节点完成，15 个产物，61 个事件 |
 | [真实仓库 smoke test](scholar-agent/docs/experiments/2026-07-17_attention_repo_smoke.md) | 指定论文仓库的受控集成测试 | 验证仓库发现、准备与执行链 |
-| [单节点 CPU 消融](scholar-agent/docs/experiments/2026-07-17_attention_light_ablation.md) | ScholarAgent `/api/execute` | 标准库 CPU 微基准 |
-| [独立 V100 消融](scholar-agent/docs/experiments/2026-07-17_attention_gpu_ablation.md) | 项目外独立 PyTorch CUDA 脚本 | 非 ScholarAgent DAG，单独记录 |
+| [单节点 CPU 消融](scholar-agent/docs/experiments/2026-07-17_attention_light_ablation.md) | ResearchPilot `/api/execute` | 标准库 CPU 微基准 |
+| [独立 V100 消融](scholar-agent/docs/experiments/2026-07-17_attention_gpu_ablation.md) | 项目外独立 PyTorch CUDA 脚本 | 非 ResearchPilot DAG，单独记录 |
 
 上述 smoke 实验不下载 WMT14、不复现 BLEU，也不应外推为完整论文训练结论。
 
 ## Project Layout
 
 ```text
-Sea-mult-agent/
+ResearchPilot/
 ├── README.md
 ├── LICENSE
 ├── ArchitectureDiagram.png
@@ -313,4 +313,4 @@ make build
 
 ## License
 
-Sea-Mult-Agent 使用 [MIT License](LICENSE)。
+ResearchPilot 使用 [MIT License](LICENSE)。

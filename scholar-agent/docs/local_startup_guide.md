@@ -31,7 +31,7 @@ cp ./backend.env.example ./backend.env
 
 然后编辑：
 
-- [backend.env](/D:/mygo/Sea-mult-agent/scholar-agent/backend.env)
+- `backend.env`
 
 最少需要确认这些变量：
 
@@ -52,12 +52,12 @@ OPEN_SANDBOX_URL=http://localhost:8081
 
 模板文件：
 
-- [backend.env.example](/D:/mygo/Sea-mult-agent/scholar-agent/backend.env.example)
+- [backend.env.example](../backend.env.example)
 
 兼容说明：
 
 - `scripts/windows/*.ps1` 现在会优先读取 `backend.env`
-- 若仓库里仍保留 [backend.env.ps1](/D:/mygo/Sea-mult-agent/scholar-agent/backend.env.ps1)，PowerShell 启动脚本也会继续兼容它
+- 若仓库里仍保留 `backend.env.ps1`，PowerShell 启动脚本也会继续兼容它
 - Linux / macOS / `cmd` 统一只读取 `backend.env`
 
 ---
@@ -83,7 +83,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\start-sandbox.ps1
 
 脚本位置：
 
-- [scripts/windows/start-sandbox.ps1](/D:/mygo/Sea-mult-agent/scholar-agent/scripts/windows/start-sandbox.ps1)
+- [scripts/windows/start-sandbox.ps1](../scripts/windows/start-sandbox.ps1)
 
 这个脚本会：
 
@@ -119,7 +119,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\start-backend.ps1
 
 脚本位置：
 
-- [scripts/windows/start-backend.ps1](/D:/mygo/Sea-mult-agent/scholar-agent/scripts/windows/start-backend.ps1)
+- [scripts/windows/start-backend.ps1](../scripts/windows/start-backend.ps1)
 
 这个脚本会：
 
@@ -155,7 +155,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\start-frontend.ps1
 
 脚本位置：
 
-- [scripts/windows/start-frontend.ps1](/D:/mygo/Sea-mult-agent/scholar-agent/scripts/windows/start-frontend.ps1)
+- [scripts/windows/start-frontend.ps1](../scripts/windows/start-frontend.ps1)
 
 默认访问地址：
 

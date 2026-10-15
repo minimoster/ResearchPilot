@@ -128,8 +128,8 @@
 
 已补充启动脚本：
 
-- [scripts/start-sandbox.ps1](/D:/mygo/Sea-mult-agent/scholar-agent/scripts/start-sandbox.ps1)
-- [scripts/start-backend.ps1](/D:/mygo/Sea-mult-agent/scholar-agent/scripts/start-backend.ps1)
+- [scripts/start-sandbox.ps1](../../scripts/windows/start-sandbox.ps1)
+- [scripts/start-backend.ps1](../../scripts/windows/start-backend.ps1)
 
 脚本已处理：
 

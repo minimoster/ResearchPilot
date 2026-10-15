@@ -67,7 +67,7 @@
 执行目录：
 
 ```bash
-cd /Users/bytedance/project/Sea-mult-agent/scholar-agent/backend
+cd scholar-agent/backend
 ```
 
 执行命令：

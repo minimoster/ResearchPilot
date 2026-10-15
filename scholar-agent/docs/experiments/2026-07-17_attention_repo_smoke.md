@@ -1,6 +1,6 @@
 # Attention Is All You Need 真实仓库 Smoke 复现
 
-本实验在 HAI V100 主机上运行 ScholarAgent 内置的 `TestRealPaperReproductionFlow`，用于验证论文解析、代码仓库发现、工作区准备、依赖安装、沙箱执行和结果对照的完整 DAG。
+本实验在 HAI V100 主机上运行 ResearchPilot 内置的 `TestRealPaperReproductionFlow`，用于验证论文解析、代码仓库发现、工作区准备、依赖安装、沙箱执行和结果对照的完整 DAG。
 
 ## 执行结果
 

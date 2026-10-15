@@ -16,9 +16,9 @@
 
 ## Interface Preview
 
-![ScholarAgent dashboard](assets/scholar-agent-dashboard.png)
+![ResearchPilot dashboard](assets/scholar-agent-dashboard.png)
 
-![ScholarAgent node execution panel](assets/scholar-agent-node-panel.png)
+![ResearchPilot node execution panel](assets/scholar-agent-node-panel.png)
 
 阶段性改造记录可参考：
 

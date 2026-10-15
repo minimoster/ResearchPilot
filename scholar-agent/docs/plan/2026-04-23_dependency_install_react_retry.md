@@ -82,7 +82,7 @@
 
 核心改造集中在：
 
-- [coder.go](file:///Users/bytedance/project/Sea-mult-agent/scholar-agent/backend/internal/agent/coder.go)
+- [coder.go](../../backend/internal/agent/coder.go)
 
 关键新增点：
 

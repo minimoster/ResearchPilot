@@ -25,7 +25,7 @@ Claim-to-Evidence Graph 把论文复现从“仓库代码是否成功运行”�
 
 [2026 年 CORE-Bench 分析](https://arxiv.org/abs/2606.26158) 进一步把关注点扩展到 OOD 泛化、效率、可靠性、模型与 scaffold 的作用，以及人机协作。Claim-to-Evidence Graph 因此不只保存一个准确率，还显式保存证据覆盖、不可验证项、缺失资产和判定理由。
 
-这些研究是设计动机，不是实现正确性的替代证明。Sea-Mult-Agent 采用自己的 Artifact、Scheduler、受限调试和前端交互契约，并通过本地测试验证这些契约。
+这些研究是设计动机，不是实现正确性的替代证明。ResearchPilot 采用自己的 Artifact、Scheduler、受限调试和前端交互契约，并通过本地测试验证这些契约。
 
 ## 3. 执行架构
 

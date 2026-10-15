@@ -2,7 +2,7 @@
 
 ## 1. 文档目标
 
-这份文档用于描述 ScholarAgent 当前 `Plan` / `Planner` / 调度执行链路的重构方案，目标是把现有“静态 mock 规划 + 单任务执行”的实现，升级为：
+这份文档用于描述 ResearchPilot 当前 `Plan` / `Planner` / 调度执行链路的重构方案，目标是把现有“静态 mock 规划 + 单任务执行”的实现，升级为：
 
 - 基于意图识别结果自动生成拓扑图
 - 显式标记并行节点、依赖信息、输入输出信息
@@ -18,15 +18,15 @@
 
 当前代码的核心现状：
 
-- [backend/internal/planner/planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)
+- [backend/internal/planner/planner.go](../../backend/internal/planner/planner.go)
   - 只根据 `intentType` 返回一个固定模板 DAG
   - 更像“任务清单生成器”，不是“可运行规划器”
 
-- [backend/internal/models/task.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/models/task.go)
+- [backend/internal/models/task.go](../../backend/internal/models/task.go)
   - 只有基础 `Plan` / `Task` 数据结构
   - 不能完整表达输入需求、产物依赖、并行性、运行态信息
 
-- [backend/internal/api/routes.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/api/routes.go)
+- [backend/internal/api/routes.go](../../backend/internal/api/routes.go)
   - `/api/plan` 只负责回一个计划
   - `/api/execute` 只执行单任务
   - 没有“整图调度器”
@@ -174,7 +174,7 @@
 
 ## 6. 推荐的数据结构设计
 
-建议重构现有 [backend/internal/models/task.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/models/task.go)，并新增图结构和产物结构。
+建议重构现有 [backend/internal/models/task.go](../../backend/internal/models/task.go)，并新增图结构和产物结构。
 
 ## 6.1 IntentContext
 
@@ -336,7 +336,7 @@ type PlanGraph struct {
 
 ## 7. Planner 重构设计
 
-建议保留 [backend/internal/planner/planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)，但职责要改成“图构建器”。
+建议保留 [backend/internal/planner/planner.go](../../backend/internal/planner/planner.go)，但职责要改成“图构建器”。
 
 ## 7.1 规划器职责
 
@@ -749,13 +749,13 @@ type PlanEvent struct {
 
 ## 15.1 必改文件
 
-- [backend/internal/models/task.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/models/task.go)
+- [backend/internal/models/task.go](../../backend/internal/models/task.go)
   - 重构状态和节点结构
 
-- [backend/internal/planner/planner.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/planner/planner.go)
+- [backend/internal/planner/planner.go](../../backend/internal/planner/planner.go)
   - 改为图构建器
 
-- [backend/internal/api/routes.go](/D:/mygo/Sea-mult-agent/scholar-agent/backend/internal/api/routes.go)
+- [backend/internal/api/routes.go](../../backend/internal/api/routes.go)
   - 增加整图执行与 SSE 接口
 
 ## 15.2 建议新增文件
@@ -769,7 +769,7 @@ type PlanEvent struct {
 
 ## 15.3 前端联动文件
 
-- [frontend/src/App.tsx](/D:/mygo/Sea-mult-agent/scholar-agent/frontend/src/App.tsx)
+- [frontend/src/App.tsx](../../frontend/src/App.tsx)
 
 需要适配：
 

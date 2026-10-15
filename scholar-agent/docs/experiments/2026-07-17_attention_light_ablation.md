@@ -1,6 +1,6 @@
 # Attention Is All You Need 轻量结构消融
 
-本实验由 ScholarAgent 的单节点 `/api/execute` 路径生成代码，并通过 HAI V100 主机上的 Docker 沙箱执行；它不是完整 Planner/Scheduler DAG。实验固定 `random.seed(42)`、`seq_len=12`、`d_model=48`，每个配置重复 5 次。
+本实验由 ResearchPilot 的单节点 `/api/execute` 路径生成代码，并通过 HAI V100 主机上的 Docker 沙箱执行；它不是完整 Planner/Scheduler DAG。实验固定 `random.seed(42)`、`seq_len=12`、`d_model=48`，每个配置重复 5 次。
 
 ## 实验边界
 
@@ -28,5 +28,5 @@
 
 ## 复现文件
 
-- `2026-07-17_attention_light_ablation.py`：ScholarAgent 生成并实际执行的代码。
+- `2026-07-17_attention_light_ablation.py`：ResearchPilot 生成并实际执行的代码。
 - `2026-07-17_attention_light_ablation.json`：结构化结果与实验限制。

@@ -1,4 +1,4 @@
-# ScholarAgent 项目架构
+# ResearchPilot 项目架构
 
 本文描述 `scholar-agent/` 当前已经实现并可运行的架构。它以代码为准，重点说明服务边界、核心数据模型、Agent 调度、论文复现、Benchmark Harness、持久化与安全边界。早期设想和尚未接入主链的模块不会被写成现有能力。
 
@@ -6,7 +6,7 @@
 
 ## 1. 架构目标
 
-ScholarAgent 是一个面向科研任务的单机多 Agent 执行系统。它把用户目标转换为带依赖和产物契约的 DAG，在受限容器中执行代码，并把节点状态、日志、指标和报告实时返回前端。
+ResearchPilot 是一个面向科研任务的单机多 Agent 执行系统。它把用户目标转换为带依赖和产物契约的 DAG，在受限容器中执行代码，并把节点状态、日志、指标和报告实时返回前端。
 
 当前架构遵循四个原则：
 
@@ -15,7 +15,7 @@ ScholarAgent 是一个面向科研任务的单机多 Agent 执行系统。它把
 3. **模型负责建议，代码负责约束**：LLM 可以规划、生成和修复；DAG 校验、预算、哈希、指标重算和沙箱策略由确定性代码执行。
 4. **自动化必须有边界**：ToT、ReAct、重试、并发、运行时长和样本数都有明确上限。
 
-![Sea-Mult-Agent architecture](../../ArchitectureDiagram.png)
+![ResearchPilot architecture](../../ArchitectureDiagram.png)
 
 ## 2. 系统总览
 
