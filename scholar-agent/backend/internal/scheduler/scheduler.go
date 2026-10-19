@@ -98,6 +98,51 @@ func (s *Scheduler) CancelPlan(planID, reason string) error {
 	return nil
 }
 
+// RetryPlan resets all unfinished terminal branches as one transaction. Successful
+// upstream work and its artifacts remain available; attempt budgets stay cumulative.
+func (s *Scheduler) RetryPlan(planID string) error {
+	now := time.Now()
+	var taskIDs []string
+	if err := s.store.UpdatePlan(planID, func(plan *models.PlanGraph) error {
+		if plan.Status != models.StatusFailed && plan.Status != models.StatusCanceled {
+			return fmt.Errorf("plan cannot be retried from status %s", plan.Status)
+		}
+		for _, task := range plan.Nodes {
+			if task == nil {
+				continue
+			}
+			switch task.Status {
+			case models.StatusFailed, models.StatusBlocked, models.StatusCanceled:
+				taskIDs = append(taskIDs, task.ID)
+				resetTaskForRetry(task, now)
+				invalidateTaskArtifacts(plan, task.ID)
+			}
+		}
+		if len(taskIDs) == 0 {
+			return fmt.Errorf("plan has no retryable tasks")
+		}
+		plan.Status = models.StatusPending
+		plan.Usage.FinishedAt = nil
+		plan.UpdatedAt = now
+		fillMeta(plan)
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, taskID := range taskIDs {
+		s.publishAndStore(planID, models.PlanEvent{PlanID: planID, EventType: "task_retry_requested", TaskID: taskID, TaskStatus: string(models.StatusPending), Timestamp: now})
+	}
+	return nil
+}
+
+func invalidateTaskArtifacts(plan *models.PlanGraph, taskID string) {
+	for key, artifact := range plan.Artifacts {
+		if artifact.ProducerTaskID == taskID {
+			delete(plan.Artifacts, key)
+		}
+	}
+}
+
 func (s *Scheduler) RetryTask(planID, taskID string) error {
 	now := time.Now()
 	if err := s.store.UpdatePlan(planID, func(plan *models.PlanGraph) error {
@@ -109,8 +154,11 @@ func (s *Scheduler) RetryTask(planID, taskID string) error {
 			return fmt.Errorf("task cannot be retried from status %s", task.Status)
 		}
 		resetTaskForRetry(task, now)
+		invalidateTaskArtifacts(plan, task.ID)
 		resetBlockedDependents(plan, taskID, now)
-		plan.Status = models.StatusPending
+		if plan.Status != models.StatusInProgress {
+			plan.Status = models.StatusPending
+		}
 		plan.Usage.FinishedAt = nil
 		plan.UpdatedAt = now
 		fillMeta(plan)
@@ -137,7 +185,12 @@ func (s *Scheduler) ReassignTask(planID, taskID, assignedTo string) error {
 		}
 		task.AssignedTo = assignedTo
 		resetTaskForRetry(task, now)
-		plan.Status = models.StatusPending
+		invalidateTaskArtifacts(plan, task.ID)
+		resetBlockedDependents(plan, taskID, now)
+		if plan.Status != models.StatusInProgress {
+			plan.Status = models.StatusPending
+		}
+		plan.Usage.FinishedAt = nil
 		plan.UpdatedAt = now
 		fillMeta(plan)
 		return nil
@@ -148,7 +201,9 @@ func (s *Scheduler) ReassignTask(planID, taskID, assignedTo string) error {
 	return nil
 }
 
-func (s *Scheduler) ExecutePlan(ctx context.Context, planID string) error {
+func (s *Scheduler) ExecutePlan(ctx context.Context, planID string) (runErr error) {
+	ctx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	if s.store == nil {
 		return fmt.Errorf("plan store is nil")
 	}
@@ -172,6 +227,21 @@ func (s *Scheduler) ExecutePlan(ctx context.Context, planID string) error {
 	}); err != nil {
 		return err
 	}
+	// Once claimed, every exit must leave a terminal state and revoke task
+	// leases, including synchronous dispatch errors partway through a batch.
+	defer func() {
+		if current, err := s.store.GetPlan(planID); err == nil && current.Status == models.StatusInProgress {
+			reason := "plan execution interrupted"
+			if runErr != nil {
+				reason = runErr.Error()
+			} else if ctx.Err() != nil {
+				reason = ctx.Err().Error()
+			}
+			if err := s.CancelPlan(planID, reason); err != nil {
+				log.Printf("scheduler: finalize interrupted plan %s: %v", planID, err)
+			}
+		}
+	}()
 	s.publishAndStore(planID, models.PlanEvent{
 		PlanID:    planID,
 		EventType: "plan_started",
@@ -414,6 +484,11 @@ func (s *Scheduler) runReadyNodes(ctx context.Context, planID string, ready []*m
 				return
 			}
 
+			if !executionMatches(currentTask, executionID, leaseOwner) {
+				s.publishDiscardedResult(planID, taskID, executionID, leaseOwner)
+				return
+			}
+
 			logChannel := make(chan string, 64)
 			execCtx := context.WithValue(ctx, "logChannel", logChannel)
 			taskTimeout := time.Duration(currentTask.TimeoutSeconds) * time.Second
@@ -422,7 +497,7 @@ func (s *Scheduler) runReadyNodes(ctx context.Context, planID string, ready []*m
 			}
 			taskCtx, cancelTask := context.WithTimeout(execCtx, taskTimeout)
 			forwardDone := make(chan struct{})
-			go s.forwardTaskLogs(planID, taskID, logChannel, forwardDone)
+			go s.forwardTaskLogs(planID, taskID, executionID, leaseOwner, logChannel, forwardDone)
 
 			result, execErr := s.executor.ExecuteTask(taskCtx, plan, currentTask)
 			if errors.Is(taskCtx.Err(), context.DeadlineExceeded) {
@@ -478,14 +553,19 @@ func (s *Scheduler) runReadyNodes(ctx context.Context, planID string, ready []*m
 	return nil
 }
 
-func (s *Scheduler) forwardTaskLogs(planID, taskID string, logChannel <-chan string, done chan<- struct{}) {
+func (s *Scheduler) forwardTaskLogs(planID, taskID, executionID, leaseOwner string, logChannel <-chan string, done chan<- struct{}) {
 	defer close(done)
 	for line := range logChannel {
+		plan, err := s.store.GetPlan(planID)
+		if err != nil || !executionMatches(getNodeByID(plan, taskID), executionID, leaseOwner) {
+			continue
+		}
 		s.publishAndStore(planID, models.PlanEvent{
-			PlanID:     planID,
-			EventType:  "task_log",
-			TaskID:     taskID,
-			TaskStatus: string(models.StatusInProgress),
+			PlanID:      planID,
+			EventType:   "task_log",
+			ExecutionID: executionID,
+			TaskID:      taskID,
+			TaskStatus:  string(models.StatusInProgress),
 			Payload: map[string]any{
 				"message": line,
 			},
@@ -505,6 +585,9 @@ func (s *Scheduler) markTaskStarted(planID, taskID string) (string, string, erro
 		task := getNodeByID(plan, taskID)
 		if task == nil {
 			return fmt.Errorf("task not found: %s", taskID)
+		}
+		if task.Status != models.StatusReady {
+			return ErrStaleExecution
 		}
 		if plan.Budget.MaxTaskAttempts > 0 && plan.Usage.TaskAttempts >= plan.Budget.MaxTaskAttempts {
 			return fmt.Errorf("task attempt budget exceeded")
@@ -711,6 +794,9 @@ func executionMatches(task *models.TaskNode, executionID, leaseOwner string) boo
 func resetTaskForRetry(task *models.TaskNode, now time.Time) {
 	task.Status = models.StatusPending
 	task.Result = ""
+	task.Code = ""
+	task.StructuredData = ""
+	task.ImageBase64 = ""
 	task.Error = ""
 	task.ExecutionID = ""
 	task.LeaseOwner = ""
@@ -731,6 +817,7 @@ func resetBlockedDependents(plan *models.PlanGraph, taskID string, now time.Time
 			visited[next.ID] = true
 			if next.Status == models.StatusBlocked || next.Status == models.StatusCanceled {
 				resetTaskForRetry(next, now)
+				invalidateTaskArtifacts(plan, next.ID)
 			}
 			visit(next.ID)
 		}

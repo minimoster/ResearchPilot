@@ -163,3 +163,34 @@ func governanceTestPlan(id string, nodeCount int) *models.PlanGraph {
 	}
 	return plan
 }
+
+func TestParallelDispatchBudgetFailureFinalizesClaimedPlan(t *testing.T) {
+	ps := store.NewMemoryPlanStore()
+	plan := governanceTestPlan("partial-dispatch-budget", 2)
+	plan.Budget.MaxTaskAttempts = 1
+	for _, task := range plan.Nodes {
+		task.Parallelizable = true
+	}
+	if err := ps.SavePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewScheduler(ps, taskExecutorFunc(func(ctx context.Context, _ *models.PlanGraph, _ *models.TaskNode) (*models.TaskExecutionResult, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}), nil, 2)
+	if err := runner.ExecutePlan(context.Background(), plan.ID); err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("expected dispatch budget error, got %v", err)
+	}
+	final, err := ps.GetPlan(plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Status != models.StatusCanceled || final.Usage.FinishedAt == nil || final.Meta.InProgressNodes != 0 {
+		t.Fatalf("dispatch exit stranded plan: %+v", final)
+	}
+	for _, task := range final.Nodes {
+		if task.Status != models.StatusCanceled || task.ExecutionID != "" || task.LeaseExpiresAt != nil {
+			t.Fatalf("dispatch left active lease: %+v", task)
+		}
+	}
+}

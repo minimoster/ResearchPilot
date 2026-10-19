@@ -25,7 +25,7 @@ jobs:
           cache-dependency-path: scholar-agent/frontend/package-lock.json
       - run: npm ci
         working-directory: scholar-agent/frontend
-      - run: npm run lint && npm run build
+      - run: npm run lint && npm test && npm run build
         working-directory: scholar-agent/frontend
       - run: go test ./...
         working-directory: scholar-agent/backend

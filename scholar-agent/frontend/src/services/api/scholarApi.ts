@@ -5,6 +5,7 @@ import type {
   ExecuteTaskPayload,
   PlanEvent,
   PlanResponse,
+  PlanGraph,
 	UploadedFile,
 } from '../../contracts/api';
 import { DIRECT_EXECUTION_EVENTS, PLAN_STREAM_EVENT_NAME } from '../../contracts/events';
@@ -50,9 +51,19 @@ export const approvePlan = async (planId: string, identity: RequestIdentity): Pr
 	return response.data;
 };
 
-export const cancelPlan = async (planId: string, identity: RequestIdentity): Promise<ExecutePlanResponse> => {
-	const response = await httpClient.post<ExecutePlanResponse>(`/api/plans/${planId}/cancel`, {}, { headers: buildIdentityHeaders(identity) });
+export const cancelPlan = async (planId: string, identity: RequestIdentity): Promise<ExecutePlanResponse & { plan_graph: PlanGraph }> => {
+	const response = await httpClient.post<ExecutePlanResponse & { plan_graph: PlanGraph }>(`/api/plans/${planId}/cancel`, {}, { headers: buildIdentityHeaders(identity) });
 	return response.data;
+};
+
+export const getPlan = async (planId: string, identity: RequestIdentity): Promise<PlanGraph> => {
+  const response = await httpClient.get<{ plan_graph: PlanGraph }>(`/api/plans/${planId}`, { headers: buildIdentityHeaders(identity) });
+  return response.data.plan_graph;
+};
+
+export const retryPlan = async (planId: string, identity: RequestIdentity): Promise<ExecutePlanResponse & { plan_graph: PlanGraph }> => {
+  const response = await httpClient.post<ExecutePlanResponse & { plan_graph: PlanGraph }>(`/api/plans/${planId}/retry`, {}, { headers: buildIdentityHeaders(identity) });
+  return response.data;
 };
 
 export const retryTask = async (planId: string, taskId: string, identity: RequestIdentity): Promise<ExecutePlanResponse> => {

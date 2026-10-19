@@ -48,7 +48,7 @@ export function GraphPanel(props: GraphPanelProps) {
   } = props;
   const completedCount = nodes.filter((node) => node.data.status === 'completed').length;
   const runningCount = nodes.filter((node) => node.data.status === 'in_progress').length;
-	const failedCount = nodes.filter((node) => node.data.status === 'failed').length;
+	const failedCount = nodes.filter((node) => ['failed', 'blocked', 'canceled'].includes(String(node.data.status))).length;
   const pendingCount = nodes.filter((node) => node.data.task && node.data.status !== 'completed').length;
   const intentLabel = intentContext ? intentLabels[intentContext.intent_type] ?? intentContext.intent_type : null;
   const subtitle = intentContext?.raw_intent || graphHint;
@@ -108,7 +108,7 @@ export function GraphPanel(props: GraphPanelProps) {
 				className="flex items-center gap-2 rounded-md bg-amber-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-amber-700"
 			  >
 				<RotateCcw className="h-4 w-4" />
-				重试失败节点
+				重试未完成节点
 			  </button>
 			) : (
 			  <button

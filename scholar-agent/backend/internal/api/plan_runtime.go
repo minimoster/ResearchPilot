@@ -80,6 +80,7 @@ func (r *planRuntime) register(apiGroup *gin.RouterGroup) {
 	apiGroup.GET("/plans/:id/events", r.getPlanEvents)
 	apiGroup.POST("/plans/:id/execute", r.executePlan)
 	apiGroup.POST("/plans/:id/cancel", r.cancelPlan)
+	apiGroup.POST("/plans/:id/retry", r.retryPlan)
 	apiGroup.POST("/plans/:id/approve", r.approvePlan)
 	apiGroup.POST("/plans/:id/tasks/:taskId/retry", r.retryTask)
 	apiGroup.POST("/plans/:id/tasks/:taskId/reassign", r.reassignTask)
@@ -160,6 +161,8 @@ func (r *planRuntime) getPlanEvents(c *gin.Context) {
 
 func (r *planRuntime) executePlan(c *gin.Context) {
 	planID := c.Param("id")
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	plan, ok := r.authorizedPlan(c)
 	if !ok {
 		return
@@ -169,15 +172,12 @@ func (r *planRuntime) executePlan(c *gin.Context) {
 		return
 	}
 
-	r.mu.Lock()
 	if _, exists := r.running[planID]; exists {
-		r.mu.Unlock()
 		c.JSON(http.StatusConflict, gin.H{"error": "plan is already running"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), planTimeout(plan))
 	r.running[planID] = cancel
-	r.mu.Unlock()
 
 	go func(runCtx context.Context, runCancel context.CancelFunc) {
 		defer func() {
@@ -204,8 +204,8 @@ func (r *planRuntime) cancelPlan(c *gin.Context) {
 		return
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	cancel := r.running[plan.ID]
-	r.mu.Unlock()
 	if err := r.scheduler.CancelPlan(plan.ID, "canceled by user"); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
@@ -213,7 +213,12 @@ func (r *planRuntime) cancelPlan(c *gin.Context) {
 	if cancel != nil {
 		cancel()
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "Plan canceled", "plan_id": plan.ID})
+	current, err := r.store.GetPlan(plan.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Plan canceled", "plan_id": plan.ID, "plan_graph": current})
 }
 
 func (r *planRuntime) approvePlan(c *gin.Context) {
@@ -221,9 +226,18 @@ func (r *planRuntime) approvePlan(c *gin.Context) {
 	if !ok {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, active := r.running[plan.ID]; active {
+		c.JSON(http.StatusConflict, gin.H{"error": "plan execution is still stopping or running"})
+		return
+	}
 	now := time.Now()
 	userID := resolveUserID(c)
 	if err := r.store.UpdatePlan(plan.ID, func(current *models.PlanGraph) error {
+		if current.Status != models.StatusAwaitingApproval || current.Approval.Status != "pending" {
+			return fmt.Errorf("plan is not awaiting approval")
+		}
 		if !current.Approval.Required {
 			return fmt.Errorf("plan does not require approval")
 		}
@@ -240,9 +254,38 @@ func (r *planRuntime) approvePlan(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Plan approved", "plan_id": plan.ID})
 }
 
+func (r *planRuntime) retryPlan(c *gin.Context) {
+	plan, ok := r.authorizedPlan(c)
+	if !ok {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, active := r.running[plan.ID]; active {
+		c.JSON(http.StatusConflict, gin.H{"error": "plan execution is still stopping or running"})
+		return
+	}
+	if err := r.scheduler.RetryPlan(plan.ID); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	current, err := r.store.GetPlan(plan.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Unfinished tasks reset for retry", "plan_id": plan.ID, "plan_graph": current})
+}
+
 func (r *planRuntime) retryTask(c *gin.Context) {
 	plan, ok := r.authorizedPlan(c)
 	if !ok {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, active := r.running[plan.ID]; active {
+		c.JSON(http.StatusConflict, gin.H{"error": "plan execution is still stopping or running"})
 		return
 	}
 	if err := r.scheduler.RetryTask(plan.ID, c.Param("taskId")); err != nil {
@@ -255,6 +298,12 @@ func (r *planRuntime) retryTask(c *gin.Context) {
 func (r *planRuntime) reassignTask(c *gin.Context) {
 	plan, ok := r.authorizedPlan(c)
 	if !ok {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, active := r.running[plan.ID]; active {
+		c.JSON(http.StatusConflict, gin.H{"error": "plan execution is still stopping or running"})
 		return
 	}
 	var payload struct {
@@ -298,6 +347,9 @@ func (r *planRuntime) streamPlanEvents(c *gin.Context) {
 				continue
 			}
 			seen[fingerprint] = struct{}{}
+			if isTerminalPlanEvent(event) && !r.isCurrentTerminalEvent(planID, event) {
+				continue
+			}
 			if !writePlanSSE(c, planStreamEventName, event) || isTerminalPlanEvent(event) {
 				return false
 			}
@@ -322,6 +374,9 @@ func (r *planRuntime) streamPlanEvents(c *gin.Context) {
 				continue
 			}
 			seen[fingerprint] = struct{}{}
+			if isTerminalPlanEvent(event) && !r.isCurrentTerminalEvent(planID, event) {
+				continue
+			}
 			if !writePlanSSE(c, planStreamEventName, event) {
 				return
 			}
@@ -341,6 +396,26 @@ func (r *planRuntime) streamPlanEvents(c *gin.Context) {
 			return
 		}
 	}
+}
+
+// Previous terminal events remain in /events for audit, but must not close a
+// new retry stream (the browser also closes on any terminal event it receives).
+func (r *planRuntime) isCurrentTerminalEvent(planID string, event models.PlanEvent) bool {
+	plan, err := r.store.GetPlan(planID)
+	if err != nil {
+		return false
+	}
+	expected := map[models.TaskStatus]string{models.StatusCompleted: "plan_completed", models.StatusFailed: "plan_failed", models.StatusCanceled: "plan_canceled"}
+	if expected[plan.Status] != event.EventType {
+		return false
+	}
+	if plan.Usage.StartedAt != nil && event.Timestamp.Before(*plan.Usage.StartedAt) {
+		return false
+	}
+	if plan.Usage.FinishedAt != nil && event.Timestamp.Before(*plan.Usage.FinishedAt) {
+		return false
+	}
+	return true
 }
 
 func (r *planRuntime) authorizedPlan(c *gin.Context) (*models.PlanGraph, bool) {
