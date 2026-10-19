@@ -379,15 +379,32 @@ func validateBenchmarkOutputDirectory(workspacePath, outputRelative string, mani
 func decodeBenchmarkMetrics(raw []byte) (map[string]float64, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.UseNumber()
-	var values map[string]any
-	if err := decoder.Decode(&values); err != nil {
-		return nil, fmt.Errorf("decode metrics.json: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return nil, fmt.Errorf("decode metrics.json: trailing content")
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return nil, fmt.Errorf("metrics.json must be an object")
 	}
 	metrics := map[string]float64{}
-	for key, rawValue := range values {
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, fmt.Errorf("decode metric name: %w", err)
+		}
+		key, ok := token.(string)
+		if !ok {
+			return nil, fmt.Errorf("metric name must be a string")
+		}
+		// Lookup is case-insensitive and ignores surrounding whitespace. Reject
+		// collisions before map decoding can discard evidence or choose randomly.
+		canonical := strings.ToLower(strings.TrimSpace(key))
+		if canonical == "" || seen[canonical] {
+			return nil, fmt.Errorf("empty or duplicate metric name %q", key)
+		}
+		seen[canonical] = true
+		var rawValue any
+		if err := decoder.Decode(&rawValue); err != nil {
+			return nil, fmt.Errorf("decode metric %s: %w", key, err)
+		}
 		var value float64
 		switch typed := rawValue.(type) {
 		case json.Number:
@@ -405,6 +422,12 @@ func decodeBenchmarkMetrics(raw []byte) (map[string]float64, error) {
 			return nil, fmt.Errorf("metric %s is not finite", key)
 		}
 		metrics[key] = value
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, fmt.Errorf("decode metrics.json: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("decode metrics.json: trailing content")
 	}
 	if len(metrics) == 0 {
 		return nil, fmt.Errorf("metrics.json is empty")
@@ -546,23 +569,26 @@ func recomputeRegressionMetrics(predictions []benchmarkPredictionRecord) (float6
 	mae := 0.0
 	for index, record := range predictions {
 		prediction, err := strconv.ParseFloat(fmt.Sprint(record.Prediction), 64)
-		if err != nil {
-			return 0, 0, fmt.Errorf("prediction line %d is not numeric", index+1)
+		if err != nil || math.IsNaN(prediction) || math.IsInf(prediction, 0) {
+			return 0, 0, fmt.Errorf("prediction line %d is not finite numeric data", index+1)
 		}
 		target, err := strconv.ParseFloat(fmt.Sprint(record.Target), 64)
-		if err != nil {
-			return 0, 0, fmt.Errorf("prediction target line %d is not numeric", index+1)
+		if err != nil || math.IsNaN(target) || math.IsInf(target, 0) {
+			return 0, 0, fmt.Errorf("prediction target line %d is not finite numeric data", index+1)
 		}
 		delta := prediction - target
 		mse += delta * delta
 		mae += math.Abs(delta)
+		if math.IsInf(mse, 0) || math.IsInf(mae, 0) {
+			return 0, 0, fmt.Errorf("regression metric overflow at prediction line %d", index+1)
+		}
 	}
 	return mse / float64(len(predictions)), mae / float64(len(predictions)), nil
 }
 
 func benchmarkMetric(metrics map[string]float64, name string) (float64, bool) {
 	for key, value := range metrics {
-		if strings.EqualFold(strings.TrimSpace(key), name) {
+		if strings.ToLower(strings.TrimSpace(key)) == strings.ToLower(strings.TrimSpace(name)) {
 			return value, true
 		}
 	}
@@ -570,6 +596,9 @@ func benchmarkMetric(metrics map[string]float64, name string) (float64, bool) {
 }
 
 func benchmarkMetricClose(reported, recomputed float64) bool {
+	if math.IsNaN(reported) || math.IsInf(reported, 0) || math.IsNaN(recomputed) || math.IsInf(recomputed, 0) {
+		return false
+	}
 	tolerance := math.Max(1e-6, math.Abs(recomputed)*1e-4)
 	return math.Abs(reported-recomputed) <= tolerance
 }
