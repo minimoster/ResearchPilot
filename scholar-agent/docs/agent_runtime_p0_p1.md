@@ -168,7 +168,7 @@ docker compose config
 - PostgreSQL/Redis 事务状态机与多副本 scheduler leader election。
 - 跨机器 Artifact 对象存储和大结果分片。
 - 沙箱内核级隔离证明、网络出口 allowlist 和密钥代理。
-- OpenTelemetry exporter、成本 token 计量和分布式 trace backend。
+- 完整的跨服务分布式 trace、Planner/工具内部埋点、流式 token 与成本计量。已有的默认关闭、任务/模型 HTTP 元数据 OTLP 导出见 [可选追踪说明](optional_telemetry.md)；它不代表上述全链路能力已完成。
 - 大规模论文训练结果的可重复性保证。
 
 因此当前推荐定位是：具备 P0/P1 运行时基础的单机研究 Agent 系统，而不是可直接承载不可信公网租户的生产平台。

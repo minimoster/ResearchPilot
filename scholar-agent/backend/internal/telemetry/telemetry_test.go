@@ -108,7 +108,7 @@ func TestDisabledPreservesOriginalObjectsAndIgnoresExporterSettings(t *testing.T
 func TestHTTPUsagePresenceParentCorrelationAndPrivacy(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, contentType, status string
-		wantInput, wantOutput          any
+		wantInput, wantOutput           any
 	}{
 		{"known-zero", `{"choices":[{"message":{"content":"private-answer"}}],"usage":{"prompt_tokens":0,"completion_tokens":4,"total_tokens":4}}`, "application/json", "provider_reported", "0", "4"},
 		{"missing-usage", `{"choices":[{"message":{"content":"private-answer"}}]}`, "application/json", "not_reported", nil, nil},
@@ -198,7 +198,7 @@ type errorBody struct {
 }
 
 func (b *errorBody) Read(p []byte) (int, error) { return copy(p, "abc"), b.readErr }
-func (b *errorBody) Close() error             { return b.closeErr }
+func (b *errorBody) Close() error               { return b.closeErr }
 
 func TestResponseReadAndCloseErrorsAreUnchanged(t *testing.T) {
 	sink, received := receiver(t, http.StatusOK, `{}`)

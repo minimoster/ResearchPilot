@@ -36,11 +36,11 @@ func TestSchedulerTelemetryWithRealModelClient(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			type receivedSpan struct {
 				TraceID, SpanID, ParentSpanID, Name string
-				Attributes []struct {
-					Key string
+				Attributes                          []struct {
+					Key   string
 					Value map[string]any
 				}
-				Status struct { Code int }
+				Status struct{ Code int }
 			}
 			var mu sync.Mutex
 			var spans []receivedSpan
@@ -137,7 +137,9 @@ func TestSchedulerTelemetryWithRealModelClient(t *testing.T) {
 			attrs := func(span receivedSpan) map[string]any {
 				result := map[string]any{}
 				for _, attr := range span.Attributes {
-					for _, value := range attr.Value { result[attr.Key] = value }
+					for _, value := range attr.Value {
+						result[attr.Key] = value
+					}
 				}
 				return result
 			}
@@ -153,7 +155,9 @@ func TestSchedulerTelemetryWithRealModelClient(t *testing.T) {
 				t.Fatal("task attempts lost distinct execution IDs")
 			}
 			for _, span := range capturedSpans {
-				if span.Name != "llm.http" { continue }
+				if span.Name != "llm.http" {
+					continue
+				}
 				parent, ok := parents[span.ParentSpanID]
 				if !ok || parent.TraceID != span.TraceID || attrs(parent)["langfuse.observation.metadata.execution_id"] != attrs(span)["langfuse.observation.metadata.execution_id"] {
 					t.Fatal("real Eino request lost the execution context")

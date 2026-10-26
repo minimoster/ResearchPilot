@@ -72,7 +72,7 @@ func (t *llmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	resp.Body = &usageBody{
 		ReadCloser: resp.Body, span: s, attrs: attrs, status: resp.StatusCode,
-		isJSON: mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"),
+		isJSON:    mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"),
 		streaming: mediaType == "text/event-stream",
 	}
 	return resp, nil

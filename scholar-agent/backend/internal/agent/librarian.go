@@ -43,9 +43,9 @@ func (a *LibrarianAgent) initEinoChain() {
 	}
 
 	chatModel, err := openai.NewChatModel(context.Background(), &openai.ChatModelConfig{
-		BaseURL: llmCfg.BaseURL,
-		APIKey:  llmCfg.APIKey,
-		Model:   llmCfg.Model,
+		BaseURL:    llmCfg.BaseURL,
+		APIKey:     llmCfg.APIKey,
+		Model:      llmCfg.Model,
 		HTTPClient: telemetry.LLMHTTPClient(llmCfg.Model),
 	})
 	if err != nil {
