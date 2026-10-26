@@ -289,7 +289,9 @@ func TestHTTPReopensInterruptedSnapshotAndResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec := &recoveryExecutor{calls: map[string]int{}, mode: "late", started: make(chan struct{}), release: make(chan struct{})}
-	defer close(exec.release)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(exec.release) }) }
+	defer release()
 	rt, router := recoveryRuntime(t, ps, exec)
 	plan := recoveryCreate(t, router, ps)
 	base := "/api/plans/" + plan.ID
@@ -306,6 +308,10 @@ func TestHTTPReopensInterruptedSnapshotAndResumes(t *testing.T) {
 	}
 	recoveryRequest(t, router, "POST", base+"/cancel", "", 200)
 	recoveryIdle(t, rt, plan.ID)
+	// Drain the retired worker before TempDir cleanup can remove its store.
+	// The captured bytes still represent the interrupted, in-progress snapshot.
+	release()
+	recoveryWait(t, func() bool { return recoveryHasEvent(ps, plan.ID, "task_result_discarded") })
 	recoveredPath := filepath.Join(directory, "reopened.json")
 	if err := os.WriteFile(recoveredPath, raw, 0600); err != nil {
 		t.Fatal(err)
