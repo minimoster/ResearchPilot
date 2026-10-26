@@ -248,8 +248,9 @@ func (e *Exporter) export(span wireSpan) error {
 	if err != nil || len(response) > maxResponse || resp.StatusCode != http.StatusOK {
 		return errors.New("telemetry: export not acknowledged")
 	}
-	if len(bytes.TrimSpace(response)) == 0 {
-		return errors.New("telemetry: empty OTLP acknowledgement")
+	trimmed := bytes.TrimSpace(response)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return errors.New("telemetry: invalid OTLP acknowledgement")
 	}
 	var ack struct {
 		PartialSuccess *struct {

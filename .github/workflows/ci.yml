@@ -36,11 +36,8 @@ jobs:
         working-directory: scholar-agent/backend
         run: |
           files=(cmd/api/main.go cmd/app/main.go internal/agent/{chat,coder,data,librarian}.go internal/scheduler/{scheduler,telemetry_flow_test}.go internal/telemetry/*.go internal/api/recovery_flow_test.go)
-          diff=$(gofmt -d "${files[@]}")
-          if [ -n "$diff" ]; then
-            printf '%s\n' "$diff"
-            exit 1
-          fi
+          gofmt -d "${files[@]}"
+          test -z "$(gofmt -l "${files[@]}")"
       - run: go test ./...
         working-directory: scholar-agent/docker-sandbox
       - run: python3 -m unittest discover -s examples/paper-reproduction -p 'test_*.py'

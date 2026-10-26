@@ -20,6 +20,12 @@ type capture struct {
 	spans []wireSpan
 }
 
+func (c *capture) snapshot() ([]wireSpan, []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]wireSpan(nil), c.spans...), append([]string(nil), c.raw...)
+}
+
 func receiver(t *testing.T, code int, ack string) (*httptest.Server, *capture) {
 	t.Helper()
 	c := &capture{}
@@ -144,11 +150,12 @@ func TestHTTPUsagePresenceParentCorrelationAndPrivacy(t *testing.T) {
 			finish("completed")
 			finish("failed") // Final spans are exported once, never updated.
 			closeExporter(t, e)
-			if len(received.spans) != 2 || e.Stats().Exported != 2 {
+			spans, raw := received.snapshot()
+			if len(spans) != 2 || e.Stats().Exported != 2 {
 				t.Fatalf("expected task + HTTP span: %#v", e.Stats())
 			}
 			var parent, child wireSpan
-			for _, span := range received.spans {
+			for _, span := range spans {
 				if span.Name == "task.execute" {
 					parent = span
 				} else {
@@ -171,9 +178,9 @@ func TestHTTPUsagePresenceParentCorrelationAndPrivacy(t *testing.T) {
 			if attrs["researchpilot.usage.status"] != tc.status || attrs["gen_ai.usage.input_tokens"] != tc.wantInput || attrs["gen_ai.usage.output_tokens"] != tc.wantOutput {
 				t.Fatalf("usage presence changed: %#v", attrs)
 			}
-			for _, raw := range received.raw {
+			for _, payload := range raw {
 				for _, secret := range []string{"private-prompt", "private-answer", "private-provider-key"} {
-					if strings.Contains(raw, secret) {
+					if strings.Contains(payload, secret) {
 						t.Fatalf("export leaked %q", secret)
 					}
 				}
@@ -211,7 +218,8 @@ func TestResponseReadAndCloseErrorsAreUnchanged(t *testing.T) {
 		t.Fatal("original body semantics changed")
 	}
 	closeExporter(t, e)
-	if len(received.spans) != 1 || received.spans[0].Status.Code != 2 || strings.Contains(received.raw[0], "private-") {
+	spans, raw := received.snapshot()
+	if len(spans) != 1 || spans[0].Status.Code != 2 || strings.Contains(raw[0], "private-") {
 		t.Fatal("failure span duplicated, lost, or leaked raw error text")
 	}
 }
@@ -225,6 +233,8 @@ func TestExporterRejectsFailedAndPartialAcknowledgements(t *testing.T) {
 		{"unauthorized", 401, `{"error":"private-auth-detail"}`},
 		{"unavailable", 503, `{}`},
 		{"partial", 200, `{"partialSuccess":{"rejectedSpans":"1","errorMessage":"private"}}`},
+		{"empty", 200, ""},
+		{"null", 200, "null"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sink, received := receiver(t, tc.code, tc.ack)
@@ -234,7 +244,8 @@ func TestExporterRejectsFailedAndPartialAcknowledgements(t *testing.T) {
 			cancel() // Export must survive application cancellation.
 			finish("canceled")
 			closeExporter(t, e)
-			if e.Stats().Failed != 1 || e.Stats().Exported != 0 || len(received.spans) != 1 {
+			spans, _ := received.snapshot()
+			if e.Stats().Failed != 1 || e.Stats().Exported != 0 || len(spans) != 1 {
 				t.Fatalf("failure/partial ack incorrectly counted or retried: %+v", e.Stats())
 			}
 		})
@@ -294,5 +305,96 @@ func TestQueueSaturationAndConcurrentShutdownDoNotBlockTask(t *testing.T) {
 	case <-e.done:
 	case <-time.After(time.Second):
 		t.Fatal("worker did not stop after shutdown cancellation")
+	}
+}
+
+func TestConcurrentProducersAndMultipleCloseCallsAreBounded(t *testing.T) {
+	e, err := New(Config{Enabled: true, Endpoint: "http://unused.invalid", QueueSize: 2, Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = e.Close(ctx)
+	})
+	entered := make(chan struct{})
+	// Keep the worker busy until Close cancels it, independent of HTTP timing.
+	e.client.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+		close(entered)
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})
+	e.enqueue(wireSpan{})
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("export did not start")
+	}
+	start, stop := make(chan struct{}), make(chan struct{})
+	var stopOnce sync.Once
+	stopProducers := func() { stopOnce.Do(func() { close(stop) }) }
+	defer stopProducers()
+	ready := make(chan struct{}, 4)
+	var producers sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		producers.Add(1)
+		go func() {
+			defer producers.Done()
+			e.enqueue(wireSpan{})
+			ready <- struct{}{}
+			<-start
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					e.enqueue(wireSpan{})
+				}
+			}
+		}()
+	}
+	for i := 0; i < 4; i++ {
+		select {
+		case <-ready:
+		case <-time.After(time.Second):
+			t.Fatal("producer blocked on saturated queue")
+		}
+	}
+	closed := make(chan error, 4)
+	for i := 0; i < 4; i++ {
+		go func() {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			closed <- e.Close(ctx)
+		}()
+	}
+	close(start) // Producers keep submitting while all Close calls run.
+	for i := 0; i < 4; i++ {
+		select {
+		case err := <-closed:
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("unexpected concurrent shutdown error: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("concurrent Close calls blocked")
+		}
+	}
+	stopProducers()
+	finished := make(chan struct{})
+	go func() { producers.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("producer did not stop after concurrent shutdown")
+	}
+	select {
+	case <-e.done:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not stop after concurrent shutdown")
+	}
+	if stats := e.Stats(); stats.Dropped == 0 || stats.Enqueued > 3 {
+		t.Fatalf("queue did not stay bounded: %+v", stats)
 	}
 }

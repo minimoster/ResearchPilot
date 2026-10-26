@@ -124,12 +124,15 @@ func TestSchedulerTelemetryWithRealModelClient(t *testing.T) {
 			if err := exporter.Close(ctx); err != nil {
 				t.Fatal(err)
 			}
+			mu.Lock()
+			capturedSpans := append([]receivedSpan(nil), spans...)
+			mu.Unlock()
 			wantAttempts := 1
 			if tc.retry {
 				wantAttempts = 2
 			}
-			if len(spans) != 2*wantAttempts {
-				t.Fatalf("expected one task and one LLM span per attempt: got %d", len(spans))
+			if len(capturedSpans) != 2*wantAttempts {
+				t.Fatalf("expected one task and one LLM span per attempt: got %d", len(capturedSpans))
 			}
 			attrs := func(span receivedSpan) map[string]any {
 				result := map[string]any{}
@@ -140,7 +143,7 @@ func TestSchedulerTelemetryWithRealModelClient(t *testing.T) {
 			}
 			parents := map[string]receivedSpan{}
 			executionIDs := map[any]bool{}
-			for _, span := range spans {
+			for _, span := range capturedSpans {
 				if span.Name == "task.execute" {
 					parents[span.SpanID] = span
 					executionIDs[attrs(span)["langfuse.observation.metadata.execution_id"]] = true
@@ -149,7 +152,7 @@ func TestSchedulerTelemetryWithRealModelClient(t *testing.T) {
 			if len(executionIDs) != wantAttempts || executionIDs[nil] {
 				t.Fatal("task attempts lost distinct execution IDs")
 			}
-			for _, span := range spans {
+			for _, span := range capturedSpans {
 				if span.Name != "llm.http" { continue }
 				parent, ok := parents[span.ParentSpanID]
 				if !ok || parent.TraceID != span.TraceID || attrs(parent)["langfuse.observation.metadata.execution_id"] != attrs(span)["langfuse.observation.metadata.execution_id"] {
