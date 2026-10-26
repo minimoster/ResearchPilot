@@ -7,12 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"scholar-agent-backend/internal/api"
+	"scholar-agent-backend/internal/telemetry"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
+	defer telemetry.Shutdown()
 	clearProxyEnv()
 	configureFileLogging()
 

@@ -12,6 +12,7 @@ import (
 	"scholar-agent-backend/internal/appconfig"
 	"scholar-agent-backend/internal/models"
 	"scholar-agent-backend/internal/prompts"
+	"scholar-agent-backend/internal/telemetry"
 	"scholar-agent-backend/internal/sandbox"
 	"strings"
 
@@ -96,6 +97,7 @@ func (a *CoderAgent) initRealEinoChain() {
 		BaseURL: llmCfg.BaseURL,
 		APIKey:  llmCfg.APIKey,
 		Model:   llmCfg.Model,
+		HTTPClient: telemetry.LLMHTTPClient(llmCfg.Model),
 	})
 	if err != nil {
 		log.Fatalf("初始化大模型失败: %v", err)

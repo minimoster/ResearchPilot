@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"scholar-agent-backend/internal/api"
+	"scholar-agent-backend/internal/telemetry"
 	"scholar-agent-backend/internal/sandboxserver"
 	"scholar-agent-backend/webui"
 	"strings"
@@ -20,6 +21,7 @@ import (
 )
 
 func main() {
+	defer telemetry.Shutdown()
 	clearProxyEnv()
 	configureFileLogging()
 
