@@ -7,6 +7,7 @@
 - [project_structure_frontend_backend.md](project_structure_frontend_backend.md)：仓库结构与模块职责
 - [backend_planner_models_reference.md](backend_planner_models_reference.md)：后端规划与调度模型说明
 - [agent_runtime_p0_p1.md](agent_runtime_p0_p1.md)：P0/P1 可靠性、安全、治理与运维说明
+- [optional_telemetry.md](optional_telemetry.md)：可关闭的任务/模型 HTTP 追踪、token 口径、离线验证与回退
 - [tot_ablation_and_uploads.md](tot_ablation_and_uploads.md)：受限 ToT 消融设计、预算选择和文件上传
 - [research_coding_agent.md](research_coding_agent.md)：科研 Coding 智能体组件架构、任务路由、论文调试状态机与自有数据 Benchmark 契约
 - [claim_evidence_graph.md](claim_evidence_graph.md)：分层论文主张、冻结 Rubric、运行证据绑定、判定边界与前端可视化

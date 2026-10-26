@@ -7,6 +7,7 @@ import (
 	"log"
 	"scholar-agent-backend/internal/models"
 	"scholar-agent-backend/internal/store"
+	"scholar-agent-backend/internal/telemetry"
 	"sort"
 	"time"
 
@@ -496,6 +497,10 @@ func (s *Scheduler) runReadyNodes(ctx context.Context, planID string, ready []*m
 				taskTimeout = 10 * time.Minute
 			}
 			taskCtx, cancelTask := context.WithTimeout(execCtx, taskTimeout)
+			taskCtx, finishTrace := telemetry.StartTask(taskCtx, telemetry.Correlation{
+				TraceID: plan.TraceID, PlanID: plan.ID, TaskID: taskID, ExecutionID: executionID,
+			})
+			defer finishTrace("interrupted")
 			forwardDone := make(chan struct{})
 			go s.forwardTaskLogs(planID, taskID, executionID, leaseOwner, logChannel, forwardDone)
 
@@ -521,6 +526,8 @@ func (s *Scheduler) runReadyNodes(ctx context.Context, planID string, ready []*m
 					Error:  "task execution returned nil result",
 				}
 			}
+
+			finishTrace(string(result.Status))
 
 			if result.Status == models.StatusFailed {
 				retrying, err := s.markTaskFailed(planID, taskID, executionID, leaseOwner, result)

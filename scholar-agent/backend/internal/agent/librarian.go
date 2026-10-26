@@ -7,6 +7,7 @@ import (
 	"scholar-agent-backend/internal/appconfig"
 	"scholar-agent-backend/internal/models"
 	"scholar-agent-backend/internal/prompts"
+	"scholar-agent-backend/internal/telemetry"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/compose"
@@ -42,9 +43,10 @@ func (a *LibrarianAgent) initEinoChain() {
 	}
 
 	chatModel, err := openai.NewChatModel(context.Background(), &openai.ChatModelConfig{
-		BaseURL: llmCfg.BaseURL,
-		APIKey:  llmCfg.APIKey,
-		Model:   llmCfg.Model,
+		BaseURL:    llmCfg.BaseURL,
+		APIKey:     llmCfg.APIKey,
+		Model:      llmCfg.Model,
+		HTTPClient: telemetry.LLMHTTPClient(llmCfg.Model),
 	})
 	if err != nil {
 		log.Fatalf("初始化文献分析模型失败: %v", err)

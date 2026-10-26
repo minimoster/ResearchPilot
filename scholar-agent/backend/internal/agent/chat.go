@@ -6,6 +6,7 @@ import (
 	"scholar-agent-backend/internal/appconfig"
 	"scholar-agent-backend/internal/models"
 	"scholar-agent-backend/internal/prompts"
+	"scholar-agent-backend/internal/telemetry"
 	"strings"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -39,9 +40,10 @@ func (a *ChatAgent) initEinoChain() {
 	}
 
 	chatModel, err := openai.NewChatModel(context.Background(), &openai.ChatModelConfig{
-		BaseURL: llmCfg.BaseURL,
-		APIKey:  llmCfg.APIKey,
-		Model:   llmCfg.Model,
+		BaseURL:    llmCfg.BaseURL,
+		APIKey:     llmCfg.APIKey,
+		Model:      llmCfg.Model,
+		HTTPClient: telemetry.LLMHTTPClient(llmCfg.Model),
 	})
 	if err != nil {
 		log.Fatalf("初始化聊天模型失败: %v", err)
